@@ -1,9 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "export",
-  images: {
-    unoptimized: true, // Wajib untuk static export
-  },
+  images: { unoptimized: true },
 };
-
 export default nextConfig;
