@@ -124,7 +124,7 @@ export default function MiscTools({ slug }: { slug: string }) {
         const fetchOptions: RequestInit = { method: api.method || "GET" };
         if (api.method === "POST") {
           fetchOptions.headers = { 'Accept': 'application/json', 'Content-Type': 'application/json' };
-          fetchOptions.body = JSON.stringify({ url: url, vQuality: "1080" }); // Khusus Cobalt
+          fetchOptions.body = JSON.stringify({ url: url, vQuality: "1080" });
         }
 
         const response = await fetch(api.url(url), fetchOptions);
@@ -140,7 +140,6 @@ export default function MiscTools({ slug }: { slug: string }) {
            if (d.music || d.music_info?.play) items.push({ url: d.music || d.music_info.play, label: "Audio MP3", type: "audio" });
            if (d.images) d.images.forEach((img: string, i: number) => items.push({ url: img, label: `Slide ${i+1}`, type: "image" }));
         } 
-        // Handling Cobalt
         else if (api.name.includes("Cobalt") && data.url) {
            items.push({ url: data.url, label: "Video / Audio", type: data.url.includes('.mp3') ? 'audio' : 'video' });
            if (data.picker && Array.isArray(data.picker)) {
@@ -178,10 +177,11 @@ export default function MiscTools({ slug }: { slug: string }) {
     setUpscaleError(null);
 
     try {
+      // FIX TYPESCRIPT: Menggunakan (navigator as any) agar tidak error
       if (!(navigator as any).gpu) throw new Error("Browser belum mendukung WebGPU.");
       
       const WebSRModule = await import(/* @vite-ignore */ "https://cdn.jsdelivr.net/npm/@websr/websr@0.0.4/dist/websr.esm.js" as any);
-      const WebSR = WebSRModule.default || WebSRModule.WebSR || WebSRModule;
+      const WebSR = (WebSRModule as any).default || (WebSRModule as any).WebSR || WebSRModule;
       if (typeof WebSR !== "function") throw new Error("Library WebSR gagal dimuat.");
 
       setLoadingMsg("Mengunduh model AI...");
