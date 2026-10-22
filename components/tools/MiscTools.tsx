@@ -5,12 +5,13 @@ import QRCode from "qrcode";
 import { 
   Download, Link as LinkIcon, AlertCircle, Loader2, 
   Image as ImageIcon, Video, Music, Sparkles, Copy, CheckCircle2,
-  ShieldCheck, Zap, FileAudio, FileVideo, Star
+  ShieldCheck, Zap, FileAudio, FileVideo, Star, Construction
 } from "lucide-react";
 
 type ApiMediaItem = { label?: string; type?: string; url: string; size?: string; isHD?: boolean; };
 type ApiResponse = { success: boolean; normalized?: { media?: ApiMediaItem[]; }; error?: { message: string }; data?: any; result?: any; };
 
+// Hanya daftarkan API yang benar-benar siap
 const API_CONFIG = {
   tiktok: [
     { name: "TikWM", url: (u: string) => `https://www.tikwm.com/api/?url=${encodeURIComponent(u)}` },
@@ -27,7 +28,6 @@ const API_CONFIG = {
   ]
 };
 
-// Helper for Badge
 const getBadgeStyle = (label: string = "") => {
   const l = label.toLowerCase();
   if (l.includes('hd')) return "bg-gradient-to-r from-orange-500 to-red-500 text-white shadow-red-500/30";
@@ -55,74 +55,47 @@ export default function MiscTools({ slug }: { slug: string }) {
     }
   }, [text, slug]);
 
-  const isDownloader = ["tiktok-downloader", "youtube-downloader", "instagram-downloader", "spotify-downloader", "all-media-downloader", "pinterest-downloader"].includes(slug);
+  // Daftar tool yang BENAR-BENAR diimplementasikan downloader-nya
+  const supportedDownloaders = ["tiktok-downloader", "youtube-downloader", "instagram-downloader", "pinterest-downloader"];
+  const isDownloader = supportedDownloaders.includes(slug);
 
   const extractMediaFromRaw = (raw: any, platform: string): ApiMediaItem[] => {
     let items: ApiMediaItem[] = [];
     
-    // --- LOGIKA KHUSUS TIKTOK (Bikin Opsi Ganda) ---
     if (platform === "tiktok" && raw.data) {
       const d = raw.data;
-      // 1. Opsi No Watermark (Biasa)
-      if (d.play) {
-        items.push({ 
-          url: d.play, 
-          label: "No Watermark (Standar)", 
-          type: "video", 
-          size: d.size ? (d.size/1024/1024).toFixed(1)+" MB" : "" 
-        });
-      }
-      // 2. Opsi No Watermark + HD (Paksa parameter &hd=1 atau pakai hdplay)
+      if (d.play) items.push({ url: d.play, label: "No Watermark (Standar)", type: "video", size: d.size ? (d.size/1024/1024).toFixed(1)+" MB" : "" });
       if (d.hdplay) {
         items.push({ url: d.hdplay, label: "No Watermark + HD", type: "video", isHD: true });
       } else if (d.play) {
-        // Trik paksa HD di URL
         const hdUrl = d.play.includes('?') ? `${d.play}&hd=1` : `${d.play}?hd=1`;
         items.push({ url: hdUrl, label: "No Watermark + HD", type: "video", isHD: true });
       }
-      // 3. Opsi Audio
-      if (d.music || d.music_info?.play) {
-        items.push({ url: d.music || d.music_info.play, label: "Audio MP3 (Original Sound)", type: "audio" });
-      }
+      if (d.music || d.music_info?.play) items.push({ url: d.music || d.music_info.play, label: "Audio MP3 (Original Sound)", type: "audio" });
     }
-
-    // --- LOGIKA KHUSUS PINTEREST (HD 1080p) ---
     else if (platform === "pinterest") {
       const source = raw.normalized?.media || raw.data || raw.result || [];
       const traverse = (obj: any) => {
         if (obj && typeof obj === "object") {
           if (typeof obj.url === "string" && obj.url.startsWith("http")) {
             const originalUrl = obj.url.replace(/\/(236x|474x|564x|736x|1200x)\//, '/originals/');
-            // Cek apakah URL asli berbeda dengan URL HD (berarti trik berhasil)
             const isHDAvailable = originalUrl !== obj.url;
-            
             items.push({ url: obj.url, label: "Download (Ukuran Asli)", type: "image" });
-            
-            if (isHDAvailable) {
-              items.push({ url: originalUrl, label: "Download HD 1080p (Sharpened)", type: "image", isHD: true });
-            }
+            if (isHDAvailable) items.push({ url: originalUrl, label: "Download HD 1080p", type: "image", isHD: true });
           }
           Object.values(obj).forEach(traverse);
         }
       };
       traverse(source);
     }
-
-    // --- LOGIKA UMUM (YT, IG, dll) ---
     else {
       if (raw.normalized?.media && Array.isArray(raw.normalized.media)) {
-        items = raw.normalized.media.map((m: any) => ({
-          url: m.url, label: m.label || m.type, type: m.type
-        }));
+        items = raw.normalized.media.map((m: any) => ({ url: m.url, label: m.label || m.type, type: m.type }));
       } else if (raw.data || raw.result) {
         const traverse = (obj: any) => {
           if (obj && typeof obj === "object") {
             if (typeof obj.url === "string" && obj.url.startsWith("http")) {
-              items.push({ 
-                url: obj.url, 
-                label: obj.label || obj.quality || "Original Quality", 
-                type: obj.type || (obj.url.match(/\.(mp4)/) ? 'video' : obj.url.match(/\.(mp3)/) ? 'audio' : 'image')
-              });
+              items.push({ url: obj.url, label: obj.label || obj.quality || "Original Quality", type: obj.type || (obj.url.match(/\.(mp4)/) ? 'video' : obj.url.match(/\.(mp3)/) ? 'audio' : 'image') });
             }
             Object.values(obj).forEach(traverse);
           }
@@ -130,7 +103,6 @@ export default function MiscTools({ slug }: { slug: string }) {
         traverse(raw.data || raw.result);
       }
     }
-    
     return Array.from(new Map(items.map(item => [item.url, item])).values());
   };
 
@@ -139,9 +111,15 @@ export default function MiscTools({ slug }: { slug: string }) {
     setIsLoading(true); setError(""); setMediaList([]);
     
     let platform = slug.replace("-downloader", "");
-    if (platform === "all-media") platform = "aio";
     
-    const apis = (API_CONFIG as any)[platform] || API_CONFIG.tiktok;
+    // Validasi: Jangan biarkan fallback ke TikTok jika platform tidak ada di API_CONFIG
+    const apis = (API_CONFIG as any)[platform];
+    if (!apis) {
+      setError("Layanan untuk platform ini belum tersedia saat ini.");
+      setIsLoading(false);
+      return;
+    }
+
     let success = false;
     let lastError = "Gagal mengambil media.";
 
@@ -162,7 +140,6 @@ export default function MiscTools({ slug }: { slug: string }) {
           if (extracted.some(m => m.type?.includes('audio'))) setActiveTab("audio");
           else if (extracted.some(m => m.type?.includes('video'))) setActiveTab("video");
           else setActiveTab("image");
-          
           break; 
         } else {
           throw new Error(`Tidak ada link ditemukan`);
@@ -172,7 +149,7 @@ export default function MiscTools({ slug }: { slug: string }) {
       }
     }
 
-    if (!success) setError(`Semua server sedang sibuk. (${lastError})`);
+    if (!success) setError(`Gagal: ${lastError}. Pastikan link publik & valid.`);
     setIsLoading(false);
   };
 
@@ -182,6 +159,7 @@ export default function MiscTools({ slug }: { slug: string }) {
     setTimeout(() => setCopiedIndex(null), 2000);
   };
 
+  // --- RENDER UI DOWNLOADER (TIKTOK, YT, IG, PINTEREST) ---
   if (isDownloader) {
     const isTikTok = slug === "tiktok-downloader";
     const isPinterest = slug === "pinterest-downloader";
@@ -198,19 +176,16 @@ export default function MiscTools({ slug }: { slug: string }) {
 
     return (
       <div className="space-y-6 pb-10 animate-fade-in-up">
-        
-        {/* HEADER */}
         <div className="text-center space-y-2 relative pt-2">
           <h3 className="font-extrabold text-2xl text-slate-800 dark:text-white relative z-10">
             {isPinterest ? "Pinterest Downloader" : "TikTok Downloader"}
           </h3>
           <p className="text-xs text-slate-500 dark:text-slate-400 max-w-[280px] mx-auto relative z-10 leading-relaxed">
-            {isPinterest ? "Unduh gambar resolusi asli atau versi HD yang sudah dipertajam." : 
+            {isPinterest ? "Unduh gambar resolusi asli atau versi HD (1080p)." : 
              "Pilih unduhan tanpa watermark (No WM) atau kualitas HD yang lebih tajam."}
           </p>
         </div>
 
-        {/* INPUT */}
         <div className="relative group">
           <div className="absolute -inset-1 bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 rounded-2xl blur opacity-25 group-hover:opacity-50 transition duration-500"></div>
           <div className="relative flex items-center bg-white dark:bg-slate-800 rounded-2xl p-1.5 shadow-sm border border-slate-100 dark:border-slate-700">
@@ -223,11 +198,7 @@ export default function MiscTools({ slug }: { slug: string }) {
               onChange={(e) => setUrl(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleDownload()}
             />
-            <button 
-              onClick={handleDownload} 
-              disabled={isLoading || !url}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-bold text-sm transition-all disabled:opacity-50 flex items-center gap-2 shadow-lg shadow-blue-500/30 active:scale-95"
-            >
+            <button onClick={handleDownload} disabled={isLoading || !url} className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-bold text-sm transition-all disabled:opacity-50 flex items-center gap-2 shadow-lg shadow-blue-500/30 active:scale-95">
               {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Ambil"}
             </button>
           </div>
@@ -250,8 +221,6 @@ export default function MiscTools({ slug }: { slug: string }) {
 
         {!isLoading && mediaList.length > 0 && (
           <div className="space-y-6 animate-fade-in-up">
-            
-            {/* TABS */}
             {hasMultipleTypes && (
               <div className="flex bg-slate-100 dark:bg-slate-800 p-1.5 rounded-2xl">
                 {mediaList.some(m => m.type?.includes('video') || m.url.includes('.mp4')) && (
@@ -266,14 +235,9 @@ export default function MiscTools({ slug }: { slug: string }) {
               </div>
             )}
 
-            {/* PREVIEW (KECIL DI ATAS) */}
             <div className="rounded-3xl overflow-hidden shadow-lg bg-black/90 border border-slate-700/50 flex justify-center">
-              {activeTab === 'video' && filteredMedia[0] && (
-                <video src={filteredMedia[0].url} controls playsInline className="w-full h-auto max-h-[300px] object-contain" />
-              )}
-              {activeTab === 'image' && filteredMedia[0] && (
-                <img src={filteredMedia[0].url} alt="Preview" className={`w-full h-auto max-h-[300px] object-contain ${isPinterest ? 'contrast-105 saturate-105' : ''}`} />
-              )}
+              {activeTab === 'video' && filteredMedia[0] && <video src={filteredMedia[0].url} controls playsInline className="w-full h-auto max-h-[300px] object-contain" />}
+              {activeTab === 'image' && filteredMedia[0] && <img src={filteredMedia[0].url} alt="Preview" className={`w-full h-auto max-h-[300px] object-contain ${isPinterest ? 'contrast-105 saturate-105' : ''}`} />}
               {activeTab === 'audio' && filteredMedia[0] && (
                 <div className="w-full p-6 flex flex-col items-center justify-center bg-gradient-to-r from-slate-800 to-slate-900">
                   <Music className="w-12 h-12 text-purple-400 mb-2 animate-bounce" />
@@ -282,42 +246,23 @@ export default function MiscTools({ slug }: { slug: string }) {
               )}
             </div>
 
-            {/* LIST OPSI DOWNLOAD (BANYAK PILIHAN) */}
             <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-xl border border-slate-100 dark:border-slate-700 overflow-hidden">
               <div className="p-4 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-100 dark:border-slate-700 flex justify-between items-center">
                 <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Pilih Kualitas Unduhan</h4>
               </div>
-              
               <div className="divide-y divide-slate-100 dark:divide-slate-700/50">
                 {filteredMedia.map((media, idx) => (
                   <div key={idx} className="p-4 flex flex-col gap-3 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                    
-                    {/* Info Label & Badge */}
                     <div className="flex items-center justify-between w-full">
                       <div className="flex items-center gap-2">
-                        {media.isHD ? (
-                          <Star className="w-4 h-4 text-orange-500 fill-orange-500" />
-                        ) : activeTab === 'video' ? (
-                          <ShieldCheck className="w-4 h-4 text-green-500" />
-                        ) : (
-                          <ImageIcon className="w-4 h-4 text-blue-500" />
-                        )}
-                        <p className="text-sm font-bold text-slate-800 dark:text-white">
-                          {media.label}
-                        </p>
+                        {media.isHD ? <Star className="w-4 h-4 text-orange-500 fill-orange-500" /> : activeTab === 'video' ? <ShieldCheck className="w-4 h-4 text-green-500" /> : <ImageIcon className="w-4 h-4 text-blue-500" />}
+                        <p className="text-sm font-bold text-slate-800 dark:text-white">{media.label}</p>
                       </div>
                       <span className={`px-2 py-1 text-[10px] font-extrabold rounded-md uppercase tracking-wider shadow-sm ${getBadgeStyle(media.label)}`}>
                         {media.isHD ? 'HD' : media.label?.includes('HD') ? 'HD' : media.label?.includes('NOWM') || media.label?.includes('No Watermark') ? 'No WM' : activeTab === 'audio' ? 'MP3' : 'IMG'}
                       </span>
                     </div>
-
-                    {/* Tombol Unduh */}
-                    <a 
-                      href={media.url} 
-                      target="_blank" 
-                      rel="noopener noreferrer" 
-                      className={`w-full py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 active:scale-95 transition-all shadow-md ${media.isHD ? 'bg-gradient-to-r from-orange-500 to-red-500 text-white' : 'bg-slate-900 dark:bg-blue-600 text-white'}`}
-                    >
+                    <a href={media.url} target="_blank" rel="noopener noreferrer" className={`w-full py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 active:scale-95 transition-all shadow-md ${media.isHD ? 'bg-gradient-to-r from-orange-500 to-red-500 text-white' : 'bg-slate-900 dark:bg-blue-600 text-white'}`}>
                       <Download className="w-4 h-4" /> Unduh {media.isHD ? 'Versi HD' : 'Sekarang'}
                     </a>
                   </div>
@@ -330,7 +275,7 @@ export default function MiscTools({ slug }: { slug: string }) {
     );
   }
 
-  // --- UI QR GENERATOR (Tetap sama) ---
+  // --- RENDER UI QR GENERATOR ---
   if (slug === "qr-generator") {
     return (
       <div className="space-y-6 flex flex-col items-center animate-fade-in-up pb-10">
@@ -352,5 +297,16 @@ export default function MiscTools({ slug }: { slug: string }) {
     );
   }
 
-  return <p className="text-center text-slate-500 py-10">Tool belum diimplementasikan.</p>;
+  // --- RENDER UI SEGERA HADIR (UNTUK TOOL LAIN YANG BELUM JADI) ---
+  return (
+    <div className="flex flex-col items-center justify-center py-20 text-center space-y-4 animate-fade-in-up">
+      <div className="w-20 h-20 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+        <Construction className="w-10 h-10 text-slate-400" />
+      </div>
+      <h2 className="text-xl font-bold text-slate-800 dark:text-white">Segera Hadir</h2>
+      <p className="text-sm text-slate-500 max-w-[250px]">
+        Fitur ini sedang dalam tahap pengembangan atau membutuhkan API khusus. Nantikan update selanjutnya!
+      </p>
+    </div>
+  );
 }
