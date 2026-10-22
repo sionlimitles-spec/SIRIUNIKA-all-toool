@@ -147,12 +147,12 @@ export default function MiscTools({ slug }: { slug: string }) {
     setUpscaleError(null);
 
     try {
-      // 1. Cek WebGPU
-      if (!navigator.gpu) throw new Error("Perangkat kamu belum mendukung WebGPU.");
+      // 1. Cek WebGPU (Menggunakan as any untuk menghindari error TypeScript)
+      if (!(navigator as any).gpu) throw new Error("Perangkat kamu belum mendukung WebGPU.");
 
       // 2. Import library WebSR secara dinamis dari CDN (esm.sh)
       const WebSRModule = await import("https://esm.sh/@websr/websr" as any);
-      const WebSR = WebSRModule.default;
+      const WebSR = (WebSRModule as any).default || WebSRModule;
 
       // 3. Ambil file model AI (weights) langsung dari GitHub
       setLoadingMsg("Mengunduh model AI (mohon tunggu)...");
