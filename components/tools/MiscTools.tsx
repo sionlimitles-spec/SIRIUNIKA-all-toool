@@ -21,13 +21,20 @@ const saveToHistory = (platform: string, url: string, title: string, thumbnail?:
   } catch (e) {}
 };
 
-// KONFIGURASI API TANPA BTCH
-const API_CONFIG: Record<string, { name: string, url: (u: string) => string, method?: string }[]> = {
+// ==========================================
+// KONFIGURASI API (TANPA COBALT & BTCH)
+// ==========================================
+const API_CONFIG: Record<string, { name: string, url: (u: string) => string }[]> = {
   tiktok: [
     { name: "TikWM", url: (u) => `${WORKER_URL}/?url=${encodeURIComponent(`https://www.tikwm.com/api/?url=${u}`)}` },
   ],
   youtube: [
-    { name: "Cobalt", url: () => `${WORKER_URL}/?url=${encodeURIComponent(`https://api.cobalt.tools/api/json`)}`, method: "POST" }
+    // Vevioz: Mengambil ID video dari link YouTube
+    { name: "Vevioz", url: (u) => {
+        const id = u.split('v=')[1]?.split('&')[0] || u.split('/').pop()?.split('?')[0];
+        return `${WORKER_URL}/?url=${encodeURIComponent(`https://api.vevioz.com/api/button/mp3/${id}`)}`;
+      } 
+    }
   ],
   instagram: [
     { name: "Snapinsta", url: (u) => `${WORKER_URL}/?url=${encodeURIComponent(`https://api.snapinsta.app/api/instagram?url=${u}`)}` }
@@ -39,7 +46,12 @@ const API_CONFIG: Record<string, { name: string, url: (u: string) => string, met
     { name: "SpotifyDown", url: (u) => `${WORKER_URL}/?url=${encodeURIComponent(`https://api.spotifydown.com/download/${u.split('/').pop()?.split('?')[0]}`)}` }
   ],
   aio: [
-    { name: "Cobalt AIO", url: () => `${WORKER_URL}/?url=${encodeURIComponent(`https://api.cobalt.tools/api/json`)}`, method: "POST" }
+    // AIO menggunakan Vevioz (Hanya mendukung YouTube)
+    { name: "Vevioz AIO", url: (u) => {
+        const id = u.split('v=')[1]?.split('&')[0] || u.split('/').pop()?.split('?')[0];
+        return `${WORKER_URL}/?url=${encodeURIComponent(`https://api.vevioz.com/api/button/videos/${id}`)}`;
+      } 
+    }
   ]
 };
 
@@ -54,7 +66,6 @@ export default function MiscTools({ slug }: { slug: string }) {
   const [activeTab, setActiveTab] = useState<"video" | "audio" | "image">("video");
   const [spotifyData, setSpotifyData] = useState<{ title: string, artist: string, thumbnail: string, tracks: any[] } | null>(null);
 
-  // State untuk WebSR (Upscaler)
   const [isUpscaling, setIsUpscaling] = useState(false);
   const [upscaleError, setUpscaleError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -121,36 +132,44 @@ export default function MiscTools({ slug }: { slug: string }) {
     for (let i = 0; i < apis.length; i++) {
       const api = apis[i]; setLoadingMsg(`Menghubungkan ke ${api.name}...`);
       try {
-        const fetchOptions: RequestInit = { method: api.method || "GET" };
-        if (api.method === "POST") {
-          fetchOptions.headers = { 'Accept': 'application/json', 'Content-Type': 'application/json' };
-          fetchOptions.body = JSON.stringify({ url: url, vQuality: "1080" });
-        }
-
-        const response = await fetch(api.url(url), fetchOptions);
+        const response = await fetch(api.url(url));
         if (!response.ok) throw new Error(`Server sibuk`);
-        const data = await response.json();
         
+        // Vevioz mengembalikan HTML, jadi kita baca sebagai text
+        const textData = await response.text(); 
         let items: ApiMediaItem[] = [];
-        
-        if (platform === "tiktok" && data.data) {
+
+        if (platform === "tiktok" && textData.includes('"data"')) {
+           // Parsing TikWM (JSON)
+           const data = JSON.parse(textData);
            const d = data.data;
            if (d.play) items.push({ url: d.play, label: "No Watermark (Standar)", type: "video" });
            if (d.hdplay || d.play) items.push({ url: d.hdplay || `${d.play}?hd=1`, label: "No Watermark + HD", type: "video", isHD: true });
            if (d.music || d.music_info?.play) items.push({ url: d.music || d.music_info.play, label: "Audio MP3", type: "audio" });
            if (d.images) d.images.forEach((img: string, i: number) => items.push({ url: img, label: `Slide ${i+1}`, type: "image" }));
         } 
-        else if (api.name.includes("Cobalt") && data.url) {
-           items.push({ url: data.url, label: "Video / Audio", type: data.url.includes('.mp3') ? 'audio' : 'video' });
-           if (data.picker && Array.isArray(data.picker)) {
-             items = data.picker.map((p: any) => ({ url: p.url, label: p.type === 'audio' ? 'Audio MP3' : 'Video MP4', type: p.type }));
+        else if (api.name.includes("Vevioz")) {
+           // EKSTRAKSI REGEX UNTUK HTML VEVI0Z
+           const mp3Match = textData.match(/href="(https:\/\/[^"]+\.mp3[^"]*)"/i);
+           const mp4Match = textData.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i);
+           
+           if (mp3Match && mp3Match[1]) items.push({ url: mp3Match[1], label: "Audio MP3 (Vevioz)", type: "audio" });
+           if (mp4Match && mp4Match[1]) items.push({ url: mp4Match[1], label: "Video MP4 (Vevioz)", type: "video" });
+           
+           if (items.length === 0) {
+              // Fallback jika regex gagal
+              throw new Error("Gagal mengekstrak link dari HTML Vevioz.");
            }
         }
-        else if (data.normalized?.media) {
-           items = data.normalized.media.map((m: any) => ({ url: m.url, label: m.label || m.type, type: m.type }));
-        } else if (data.url || data.link) {
-           const finalUrl = data.url || data.link;
-           items.push({ url: finalUrl, label: "Media File", type: finalUrl.includes('.mp3') ? 'audio' : 'video' });
+        else {
+           // Parsing Universal (Snapinsta / JSON)
+           const data = JSON.parse(textData);
+           if (data.normalized?.media) {
+              items = data.normalized.media.map((m: any) => ({ url: m.url, label: m.label || m.type, type: m.type }));
+           } else if (data.url || data.link) {
+              const finalUrl = data.url || data.link;
+              items.push({ url: finalUrl, label: "Media File", type: finalUrl.includes('.mp3') ? 'audio' : 'video' });
+           }
         }
 
         if (items.length > 0) {
@@ -177,7 +196,6 @@ export default function MiscTools({ slug }: { slug: string }) {
     setUpscaleError(null);
 
     try {
-      // FIX TYPESCRIPT: Menggunakan (navigator as any) agar tidak error
       if (!(navigator as any).gpu) throw new Error("Browser belum mendukung WebGPU.");
       
       const WebSRModule = await import(/* @vite-ignore */ "https://cdn.jsdelivr.net/npm/@websr/websr@0.0.4/dist/websr.esm.js" as any);
