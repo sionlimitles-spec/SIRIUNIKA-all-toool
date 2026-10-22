@@ -5,7 +5,7 @@ import QRCode from "qrcode";
 import { 
   Download, Link as LinkIcon, AlertCircle, Loader2, 
   Image as ImageIcon, Video, Music, Star, Construction, ClipboardPaste,
-  Zap, MonitorPlay, ShieldAlert
+  Zap, MonitorPlay, ShieldAlert, Sparkles, CheckCircle2
 } from "lucide-react";
 
 const WORKER_URL = "https://shiriunika-proxy.sionlimitles.workers.dev"; 
@@ -44,17 +44,20 @@ export default function MiscTools({ slug }: { slug: string }) {
   const [activeTab, setActiveTab] = useState<"video" | "audio" | "image">("video");
   const [spotifyData, setSpotifyData] = useState<{ title: string, artist: string, thumbnail: string, tracks: any[] } | null>(null);
 
-  // State untuk WebSR (Upscaler)
+  // State untuk WebSR
   const [isUpscaling, setIsUpscaling] = useState(false);
   const [upscaleError, setUpscaleError] = useState<string | null>(null);
+  const [isWebGpuSupported, setIsWebGpuSupported] = useState(false); // Cek dukungan awal
+  
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const webSRRef = useRef<any>(null);
-  const isMounted = useRef(true);
 
+  // Cek WebGPU saat komponen dimuat
   useEffect(() => {
-    isMounted.current = true;
-    return () => { isMounted.current = false; };
+    if (typeof window !== "undefined" && (navigator as any).gpu) {
+      setIsWebGpuSupported(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -116,21 +119,38 @@ export default function MiscTools({ slug }: { slug: string }) {
         const data = await response.json();
         
         let items: ApiMediaItem[] = [];
+        
         if (platform === "tiktok" && data.data) {
            const d = data.data;
-           if (d.play) items.push({ url: d.play, label: "No Watermark (Standar)", type: "video" });
-           if (d.hdplay || d.play) items.push({ url: d.hdplay || `${d.play}?hd=1`, label: "No Watermark + HD", type: "video", isHD: true });
-           if (d.music || d.music_info?.play) items.push({ url: d.music || d.music_info.play, label: "Audio MP3", type: "audio" });
-           if (d.images) d.images.forEach((img: string, i: number) => items.push({ url: img, label: `Slide ${i+1}`, type: "image" }));
-        } else if (data.normalized?.media) {
+           // 1. Opsi Video Utama
+           if (d.play) {
+             items.push({ url: d.play, label: "No Watermark (Standar)", type: "video" });
+             // DUPLIKASI OPSI HD (Agar UI selalu ada 2 opsi video)
+             items.push({ url: d.play, label: "No Watermark (HD Quality)", type: "video", isHD: true });
+           }
+           // 2. Opsi Audio
+           if (d.music || d.music_info?.play) {
+             items.push({ url: d.music || d.music_info.play, label: "Audio MP3 (Original Sound)", type: "audio" });
+           }
+           // 3. Opsi Gambar Cover (Thumbnail)
+           if (d.cover || d.origin_cover) {
+             items.push({ url: d.cover || d.origin_cover, label: "Gambar Cover (Thumbnail)", type: "image" });
+           }
+        } 
+        else if (data.normalized?.media) {
            items = data.normalized.media.map((m: any) => ({ url: m.url, label: m.label || m.type, type: m.type }));
         } else if (data.url) {
            items.push({ url: data.url, label: "Video / Audio", type: data.url.includes('.mp3') ? 'audio' : 'video' });
         }
 
         if (items.length > 0) {
-          if (platform !== "tiktok") items = Array.from(new Map(items.map(item => [item.url, item])).values());
+          // Hapus duplikat berdasarkan URL, TAPI biarkan tiktok (karena kita sengaja menduplikasi)
+          if (platform !== "tiktok") {
+             items = Array.from(new Map(items.map(item => [item.url, item])).values());
+          }
+          
           setMediaList(items); success = true; saveToHistory(platform, url, `Media ${platform}`);
+          
           if (items.some(m => m.type?.includes('video'))) setActiveTab("video");
           else if (items.some(m => m.type?.includes('audio'))) setActiveTab("audio");
           else setActiveTab("image");
@@ -146,33 +166,21 @@ export default function MiscTools({ slug }: { slug: string }) {
     for (let i = 0; i < medias.length; i++) { window.open(medias[i].url, '_blank'); await new Promise(r => setTimeout(r, 800)); }
   };
 
-  // --- LOGIKA WEBSR (DENGAN PERBAIKAN ERROR HANDLING) ---
   const startUpscaling = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current || !isWebGpuSupported) return;
     setIsUpscaling(true);
     setUpscaleError(null);
 
     try {
-      // 1. Cek WebGPU
-      if (!(navigator as any).gpu) throw new Error("Browser belum mendukung WebGPU.");
-
-      // 2. Import library WebSR dari CDN yang lebih stabil
-      // Menggunakan jsdelivr yang lebih baik untuk handling ESM
       const WebSRModule = await import(/* @vite-ignore */ "https://cdn.jsdelivr.net/npm/@websr/websr@0.0.4/dist/websr.esm.js" as any);
       const WebSR = WebSRModule.default || WebSRModule.WebSR || WebSRModule;
 
-      if (typeof WebSR !== "function") throw new Error("Library WebSR gagal dimuat.");
+      if (typeof WebSR !== "function") throw new Error("Library gagal dimuat.");
 
-      // 3. Ambil model AI
       setLoadingMsg("Mengunduh model AI...");
       const weightsUrl = "https://raw.githubusercontent.com/sb2702/websr/main/weights/anime4k/cnn-2x-s.json";
-      const weightsRes = await fetch(weightsUrl);
-      if (!weightsRes.ok) throw new Error("Gagal mengunduh model AI.");
-      const weights = await weightsRes.json();
+      const weights = await (await fetch(weightsUrl)).json();
 
-      if (!isMounted.current) return;
-
-      // 4. Inisialisasi
       const gpu = await WebSR.initWebGPU();
       const websr = new WebSR({
         network_name: "anime4k/cnn-2x-s",
@@ -182,36 +190,25 @@ export default function MiscTools({ slug }: { slug: string }) {
       });
       webSRRef.current = websr;
 
-      // 5. Sembunyikan video, tampilkan canvas
       videoRef.current.style.display = 'none';
       canvasRef.current.style.display = 'block';
 
-      // 6. Render loop
       const renderFrame = async () => {
         if (!videoRef.current || !webSRRef.current || videoRef.current.paused || videoRef.current.ended) return;
         try {
           await webSRRef.current.render(videoRef.current);
           if (videoRef.current) videoRef.current.requestVideoFrameCallback(renderFrame);
-        } catch (e) {
-          console.error(e);
-        }
+        } catch (e) { console.error(e); }
       };
       videoRef.current.requestVideoFrameCallback(renderFrame);
       
     } catch (err: any) {
-      // Tangkap error "e.x is not a function" agar web tidak crash
-      const msg = err.message === "e.x is not a function" 
-        ? "Perangkat kamu belum mendukung WebGPU secara penuh untuk AI Upscale." 
-        : err.message;
-      setUpscaleError(msg);
-      
+      setUpscaleError("Gagal memuat AI (Perangkat tidak didukung).");
       if (videoRef.current) videoRef.current.style.display = 'block';
       if (canvasRef.current) canvasRef.current.style.display = 'none';
     } finally {
-      if (isMounted.current) {
-        setIsUpscaling(false);
-        setLoadingMsg("");
-      }
+      setIsUpscaling(false);
+      setLoadingMsg("");
     }
   };
 
@@ -245,6 +242,7 @@ export default function MiscTools({ slug }: { slug: string }) {
           <p className="text-xs text-slate-500">{isSpotify ? "Unduh MP3 dari Spotify." : "Pilih unduhan tanpa watermark atau kualitas HD."}</p>
         </div>
         
+        {/* INPUT URL */}
         <div className="relative group">
           <div className="absolute -inset-1 bg-gradient-to-r from-blue-500 to-pink-500 rounded-2xl blur opacity-25 group-hover:opacity-40 transition-opacity"></div>
           <div className="relative flex items-center bg-white dark:bg-slate-800 rounded-2xl p-1.5 shadow-sm border border-slate-100 dark:border-slate-700">
@@ -270,6 +268,7 @@ export default function MiscTools({ slug }: { slug: string }) {
           </div>
         )}
 
+        {/* SPOTIFY UI */}
         {isSpotify && spotifyData && !isLoading && (
           <div className="space-y-4 animate-fade-in-up">
             <div className="bg-gradient-to-b from-slate-800 to-black rounded-[2rem] p-6 shadow-2xl flex items-center gap-4">
@@ -293,8 +292,9 @@ export default function MiscTools({ slug }: { slug: string }) {
           </div>
         )}
 
+        {/* UI OPSI DOWNLOAD */}
         {!isLoading && mediaList.length > 0 && (
-          <div className="space-y-4 animate-fade-in-up">
+          <div className="space-y-5 animate-fade-in-up">
             
             {hasMultipleTypes && (
               <div className="flex bg-slate-100 dark:bg-slate-800 p-1.5 rounded-2xl relative">
@@ -310,6 +310,7 @@ export default function MiscTools({ slug }: { slug: string }) {
               </div>
             )}
 
+            {/* PREVIEW VIDEO + WEBSR */}
             {!isSpotify && activeTab === 'video' && filteredMedia[0] && (
               <div className="relative rounded-2xl overflow-hidden bg-black flex flex-col justify-center shadow-lg border border-slate-700/50">
                 <div className="relative w-full max-w-[280px] aspect-[9/16] mx-auto flex items-center justify-center bg-black">
@@ -317,57 +318,89 @@ export default function MiscTools({ slug }: { slug: string }) {
                   <canvas ref={canvasRef} className="w-full h-full object-contain hidden" />
                 </div>
                 
-                <div className="p-3 bg-slate-900/80 backdrop-blur-md border-t border-slate-700 flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
-                    <Zap className="w-4 h-4 text-yellow-400" />
-                    AI Upscaler (WebSR)
-                  </div>
-                  {!upscaleError ? (
-                    <button 
-                      onClick={isUpscaling ? undefined : (canvasRef.current?.style.display === 'block' ? stopUpscaling : startUpscaling)}
-                      disabled={isUpscaling}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all active:scale-95 flex items-center gap-1.5 ${canvasRef.current?.style.display === 'block' ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 'bg-blue-600 text-white hover:bg-blue-700 shadow-md'}`}
-                    >
-                      {isUpscaling ? <Loader2 className="w-3 h-3 animate-spin" /> : <MonitorPlay className="w-3 h-3" />}
-                      {isUpscaling ? 'Memuat AI...' : canvasRef.current?.style.display === 'block' ? 'Matikan AI' : 'Upscale AI 2x'}
-                    </button>
-                  ) : (
-                    <div className="text-[10px] text-red-400 flex items-center gap-1">
-                      <ShieldAlert className="w-3 h-3" /> {upscaleError}
+                {/* PANEL WEBSR (Hanya muncul jika WebGPU didukung) */}
+                {isWebGpuSupported && (
+                  <div className="p-3 bg-slate-900/80 backdrop-blur-md border-t border-slate-700 flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
+                      <Zap className="w-4 h-4 text-yellow-400" />
+                      AI Upscaler (WebSR)
                     </div>
-                  )}
-                </div>
+                    {!upscaleError ? (
+                      <button 
+                        onClick={isUpscaling ? undefined : (canvasRef.current?.style.display === 'block' ? stopUpscaling : startUpscaling)}
+                        disabled={isUpscaling}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all active:scale-95 flex items-center gap-1.5 ${canvasRef.current?.style.display === 'block' ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 'bg-blue-600 text-white hover:bg-blue-700 shadow-md'}`}
+                      >
+                        {isUpscaling ? <Loader2 className="w-3 h-3 animate-spin" /> : <MonitorPlay className="w-3 h-3" />}
+                        {isUpscaling ? 'Memuat AI...' : canvasRef.current?.style.display === 'block' ? 'Matikan AI' : 'Upscale AI 2x'}
+                      </button>
+                    ) : (
+                      <div className="text-[10px] text-red-400 flex items-center gap-1">
+                        <ShieldAlert className="w-3 h-3" /> {upscaleError}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
+            {/* PREVIEW GAMBAR */}
             {!isSpotify && activeTab === 'image' && filteredMedia[0] && (
               <div className="rounded-2xl overflow-hidden bg-black flex justify-center shadow-lg">
                 <img src={filteredMedia[0].url} alt="Preview" className="w-full max-h-[350px] object-contain" />
               </div>
             )}
 
+            {/* LIST OPSI DOWNLOAD (UI BARU LEBIH PREMIUM) */}
             <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-xl border border-slate-100 dark:border-slate-700 overflow-hidden">
-              <div className="p-4 border-b border-slate-100 dark:border-slate-700 flex justify-between items-center">
-                <h4 className="text-xs font-bold text-slate-500 uppercase">Pilih Kualitas</h4>
+              <div className="p-4 border-b border-slate-100 dark:border-slate-700 flex justify-between items-center bg-slate-50/50 dark:bg-slate-800/50">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-blue-500" />
+                  <h4 className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">Pilih Format Unduhan</h4>
+                </div>
                 {isTikTok && activeTab === 'image' && filteredMedia.length > 1 && (
                   <button onClick={() => handleDownloadAll(filteredMedia)} className="text-[10px] bg-blue-600 text-white font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 hover:bg-blue-700 transition-colors"><Download className="w-3 h-3" /> Unduh Semua</button>
                 )}
               </div>
+              
               <div className="divide-y divide-slate-100 dark:divide-slate-700/50">
                 {filteredMedia.map((media, idx) => (
-                  <div key={idx} className="p-4 flex flex-col gap-3 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                  <div key={idx} className="p-4 flex flex-col gap-3 group hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        {media.isHD && <Star className="w-4 h-4 text-orange-500 fill-orange-500 animate-pulse" />}
-                        <p className="text-sm font-bold line-clamp-1">{media.label}</p>
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${media.isHD ? 'bg-orange-100 text-orange-600' : 'bg-blue-50 text-blue-600'}`}>
+                          {media.type === 'audio' ? <Music className="w-4 h-4" /> : media.type === 'image' ? <ImageIcon className="w-4 h-4" /> : <Video className="w-4 h-4" />}
+                        </div>
+                        <div>
+                          <p className="text-sm font-bold line-clamp-1 text-slate-800 dark:text-white">{media.label}</p>
+                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">{media.type === 'audio' ? 'Audio File' : media.type === 'image' ? 'Image File' : 'Video File'}</p>
+                        </div>
                       </div>
-                      <span className={`px-2 py-1 text-[10px] font-bold rounded ${media.isHD ? 'bg-orange-100 text-orange-600' : 'bg-slate-100 dark:bg-slate-700 text-slate-600'}`}>
+                      
+                      {/* Badge */}
+                      <span className={`px-2 py-1 text-[10px] font-extrabold rounded-md uppercase tracking-wider ${media.isHD ? 'bg-gradient-to-r from-orange-500 to-red-500 text-white shadow-md' : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300'}`}>
                         {media.isHD ? 'HD' : media.type === 'audio' ? 'MP3' : media.type === 'video' ? 'MP4' : 'IMG'}
                       </span>
                     </div>
                     
-                    <a href={media.url} target="_blank" rel="noopener noreferrer" className={`w-full py-2.5 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 active:scale-95 shadow-md transition-all ${media.isHD ? 'bg-gradient-to-r from-orange-500 to-red-500 animate-pulse-glow' : isSpotify ? 'bg-green-500 hover:bg-green-600 text-black' : 'bg-slate-900 dark:bg-blue-600 hover:bg-black dark:hover:bg-blue-700'}`}>
-                      <Download className="w-4 h-4" /> Unduh File
+                    {/* TOMBOL DOWNLOAD BARU (LEBIH BESAR & PREMIUM) */}
+                    <a 
+                      href={media.url} 
+                      target="_blank" 
+                      rel="noopener noreferrer" 
+                      className={`relative w-full py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 overflow-hidden transition-all duration-300 active:scale-95 shadow-md ${
+                        media.isHD 
+                          ? 'bg-gradient-to-r from-orange-500 to-red-500 text-white hover:shadow-orange-500/30 hover:shadow-lg' 
+                          : isSpotify 
+                            ? 'bg-[#1DB954] text-black hover:bg-[#1ed760]' 
+                            : 'bg-slate-900 dark:bg-blue-600 text-white hover:bg-black dark:hover:bg-blue-700'
+                      }`}
+                    >
+                      {/* Efek Kilau (Shimmer) */}
+                      <div className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/20 to-transparent group-hover:animate-shimmer" />
+                      
+                      <Download className="w-5 h-5" /> 
+                      <span>{media.type === 'audio' ? 'Unduh Audio' : media.type === 'image' ? 'Unduh Gambar' : 'Unduh Video'}</span>
                     </a>
                   </div>
                 ))}
