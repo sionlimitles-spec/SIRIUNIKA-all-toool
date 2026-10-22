@@ -50,6 +50,12 @@ export default function MiscTools({ slug }: { slug: string }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const webSRRef = useRef<any>(null);
+  const isMounted = useRef(true);
+
+  useEffect(() => {
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
+  }, []);
 
   useEffect(() => {
     if (slug === "qr-generator" && text) {
@@ -140,24 +146,31 @@ export default function MiscTools({ slug }: { slug: string }) {
     for (let i = 0; i < medias.length; i++) { window.open(medias[i].url, '_blank'); await new Promise(r => setTimeout(r, 800)); }
   };
 
-  // --- LOGIKA WEBSR VIA CDN (TANPA NPM INSTALL) ---
+  // --- LOGIKA WEBSR (DENGAN PERBAIKAN ERROR HANDLING) ---
   const startUpscaling = async () => {
     if (!videoRef.current || !canvasRef.current) return;
     setIsUpscaling(true);
     setUpscaleError(null);
 
     try {
-      // 1. Cek WebGPU (Menggunakan as any untuk menghindari error TypeScript)
-      if (!(navigator as any).gpu) throw new Error("Perangkat kamu belum mendukung WebGPU.");
+      // 1. Cek WebGPU
+      if (!(navigator as any).gpu) throw new Error("Browser belum mendukung WebGPU.");
 
-      // 2. Import library WebSR secara dinamis dari CDN (esm.sh)
-      const WebSRModule = await import("https://esm.sh/@websr/websr" as any);
-      const WebSR = (WebSRModule as any).default || WebSRModule;
+      // 2. Import library WebSR dari CDN yang lebih stabil
+      // Menggunakan jsdelivr yang lebih baik untuk handling ESM
+      const WebSRModule = await import(/* @vite-ignore */ "https://cdn.jsdelivr.net/npm/@websr/websr@0.0.4/dist/websr.esm.js" as any);
+      const WebSR = WebSRModule.default || WebSRModule.WebSR || WebSRModule;
 
-      // 3. Ambil file model AI (weights) langsung dari GitHub
-      setLoadingMsg("Mengunduh model AI (mohon tunggu)...");
+      if (typeof WebSR !== "function") throw new Error("Library WebSR gagal dimuat.");
+
+      // 3. Ambil model AI
+      setLoadingMsg("Mengunduh model AI...");
       const weightsUrl = "https://raw.githubusercontent.com/sb2702/websr/main/weights/anime4k/cnn-2x-s.json";
-      const weights = await (await fetch(weightsUrl)).json();
+      const weightsRes = await fetch(weightsUrl);
+      if (!weightsRes.ok) throw new Error("Gagal mengunduh model AI.");
+      const weights = await weightsRes.json();
+
+      if (!isMounted.current) return;
 
       // 4. Inisialisasi
       const gpu = await WebSR.initWebGPU();
@@ -173,22 +186,32 @@ export default function MiscTools({ slug }: { slug: string }) {
       videoRef.current.style.display = 'none';
       canvasRef.current.style.display = 'block';
 
-      // 6. Render loop (Upscale frame demi frame)
-      const renderFrame = () => {
-        if (!videoRef.current || !webSRRef.current) return;
-        webSRRef.current.render(videoRef.current).then(() => {
-          videoRef.current?.requestVideoFrameCallback(renderFrame);
-        });
+      // 6. Render loop
+      const renderFrame = async () => {
+        if (!videoRef.current || !webSRRef.current || videoRef.current.paused || videoRef.current.ended) return;
+        try {
+          await webSRRef.current.render(videoRef.current);
+          if (videoRef.current) videoRef.current.requestVideoFrameCallback(renderFrame);
+        } catch (e) {
+          console.error(e);
+        }
       };
       videoRef.current.requestVideoFrameCallback(renderFrame);
       
     } catch (err: any) {
-      setUpscaleError(err.message || "Gagal memuat AI.");
+      // Tangkap error "e.x is not a function" agar web tidak crash
+      const msg = err.message === "e.x is not a function" 
+        ? "Perangkat kamu belum mendukung WebGPU secara penuh untuk AI Upscale." 
+        : err.message;
+      setUpscaleError(msg);
+      
       if (videoRef.current) videoRef.current.style.display = 'block';
       if (canvasRef.current) canvasRef.current.style.display = 'none';
     } finally {
-      setIsUpscaling(false);
-      setLoadingMsg("");
+      if (isMounted.current) {
+        setIsUpscaling(false);
+        setLoadingMsg("");
+      }
     }
   };
 
@@ -247,7 +270,6 @@ export default function MiscTools({ slug }: { slug: string }) {
           </div>
         )}
 
-        {/* SPOTIFY UI */}
         {isSpotify && spotifyData && !isLoading && (
           <div className="space-y-4 animate-fade-in-up">
             <div className="bg-gradient-to-b from-slate-800 to-black rounded-[2rem] p-6 shadow-2xl flex items-center gap-4">
@@ -271,7 +293,6 @@ export default function MiscTools({ slug }: { slug: string }) {
           </div>
         )}
 
-        {/* UI HASIL DOWNLOAD & WEBSR */}
         {!isLoading && mediaList.length > 0 && (
           <div className="space-y-4 animate-fade-in-up">
             
@@ -296,7 +317,6 @@ export default function MiscTools({ slug }: { slug: string }) {
                   <canvas ref={canvasRef} className="w-full h-full object-contain hidden" />
                 </div>
                 
-                {/* PANEL KONTROL WEBSR */}
                 <div className="p-3 bg-slate-900/80 backdrop-blur-md border-t border-slate-700 flex items-center justify-between">
                   <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
                     <Zap className="w-4 h-4 text-yellow-400" />
