@@ -22,12 +22,14 @@ const saveToHistory = (platform: string, url: string, title: string, thumbnail?:
 };
 
 // ==========================================
-// KONFIGURASI API (TIKTOK PAKAI 2 API)
+// KONFIGURASI API (TIKTOK PAKAI TIKXEDD)
 // ==========================================
 const API_CONFIG: Record<string, { name: string, url: (u: string) => string }[]> = {
   tiktok: [
-    { name: "TikWM", url: (u) => `${WORKER_URL}/?url=${encodeURIComponent(`https://www.tikwm.com/api/?url=${u}`)}` },
-    { name: "Tiklydown", url: (u) => `${WORKER_URL}/?url=${encodeURIComponent(`https://api.tiklydown.eu.org/api/download?url=${u}`)}` }
+    // TikXedd: API publik gratis, return JSON { download: { noWatermark, watermark } }
+    { name: "TikXedd", url: (u) => `${WORKER_URL}/?url=${encodeURIComponent(`https://tikxedd.vercel.app/api/resolve?url=${u}`)}` },
+    // Fallback ke TikWM jika TikXedd gagal
+    { name: "TikWM (Backup)", url: (u) => `${WORKER_URL}/?url=${encodeURIComponent(`https://www.tikwm.com/api/?url=${u}`)}` }
   ],
   youtube: [
     { name: "Vevioz", url: (u) => {
@@ -137,32 +139,28 @@ export default function MiscTools({ slug }: { slug: string }) {
         const textData = await response.text(); 
         let items: ApiMediaItem[] = [];
 
-        // --- PARSING TIKTOK (TikWM & Tiklydown) ---
+        // --- PARSING TIKTOK ---
         if (platform === "tiktok") {
-           try {
-             const data = JSON.parse(textData);
-             
-             // Cek format TikWM
-             if (data.data) {
-               const d = data.data;
-               if (d.play) items.push({ url: d.play, label: "No Watermark (Standar)", type: "video" });
-               if (d.hdplay || d.play) items.push({ url: d.hdplay || `${d.play}?hd=1`, label: "No Watermark + HD", type: "video", isHD: true });
-               if (d.music || d.music_info?.play) items.push({ url: d.music || d.music_info.play, label: "Audio MP3", type: "audio" });
-               if (d.images) d.images.forEach((img: string, i: number) => items.push({ url: img, label: `Slide ${i+1}`, type: "image" }));
-             } 
-             // Cek format Tiklydown
-             else if (data.video || data.music) {
-               if (data.video?.noWatermark) items.push({ url: data.video.noWatermark, label: "No Watermark", type: "video" });
-               if (data.video?.noWatermarkHd) items.push({ url: data.video.noWatermarkHd, label: "No Watermark + HD", type: "video", isHD: true });
-               if (data.music?.play) items.push({ url: data.music.play, label: "Audio MP3", type: "audio" });
-             }
-             // Jika API mengembalikan error message
-             else if (data.msg || data.message) {
-               throw new Error(data.msg || data.message);
-             }
-           } catch (e) {
-             // Jika bukan JSON atau gagal parse
-             throw new Error("API mengembalikan format yang tidak dikenali.");
+           const data = JSON.parse(textData);
+           
+           // Format TikXedd
+           if (api.name === "TikXedd" && data.download) {
+              if (data.download.noWatermark) items.push({ url: data.download.noWatermark, label: "No Watermark", type: "video", isHD: true });
+              if (data.download.watermark) items.push({ url: data.download.watermark, label: "With Watermark", type: "video" });
+              // TikXedd biasanya juga mengembalikan audio di metadata
+              if (data.music?.play) items.push({ url: data.music.play, label: "Audio MP3", type: "audio" });
+           }
+           // Format TikWM (Backup)
+           else if (data.data) {
+              const d = data.data;
+              if (d.play) items.push({ url: d.play, label: "No Watermark", type: "video" });
+              if (d.hdplay || d.play) items.push({ url: d.hdplay || `${d.play}?hd=1`, label: "No Watermark + HD", type: "video", isHD: true });
+              if (d.music || d.music_info?.play) items.push({ url: d.music || d.music_info.play, label: "Audio MP3", type: "audio" });
+              if (d.images) d.images.forEach((img: string, i: number) => items.push({ url: img, label: `Slide ${i+1}`, type: "image" }));
+           }
+           // Jika API mengembalikan error
+           else if (data.msg || data.message) {
+              throw new Error(data.msg || data.message);
            }
         } 
         // --- PARSING YOUTUBE (Vevioz) ---
