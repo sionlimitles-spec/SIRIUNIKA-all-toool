@@ -39,8 +39,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className={`${poppins.variable} font-sans antialiased bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-50 min-h-screen pb-28`}>
-        {/* Background Blobs */}
+      {/* pb-32 (Padding Bottom) memastikan konten tidak tertutup nav bar melayang */}
+      <body className={`${poppins.variable} font-sans antialiased bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-50 min-h-screen pb-32`}>
         <div className="fixed inset-0 z-[-1] overflow-hidden pointer-events-none">
           <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-blue-400/20 dark:bg-blue-900/20 blur-3xl" />
           <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] rounded-full bg-purple-400/20 dark:bg-purple-900/20 blur-3xl" />
@@ -52,9 +52,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
         <MusicPlayer />
         
-        {/* Floating Bottom Navigation */}
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 w-[90%] max-w-sm z-50">
-          <nav className="glass-card bg-white/80 dark:bg-slate-800/80 rounded-full px-2 py-1.5 shadow-2xl flex justify-between items-center">
+        {/* FLOATING BOTTOM NAVIGATION - Diperkecil & Melayang */}
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[85%] max-w-[360px] z-50">
+          <nav className="bg-white/70 dark:bg-slate-800/70 backdrop-blur-2xl border border-white/40 dark:border-slate-700/50 rounded-full px-2 py-1.5 shadow-[0_8px_30px_rgb(0,0,0,0.12)] flex justify-around items-center">
             {[
               { name: "Beranda", icon: Home, href: "/" },
               { name: "Tools", icon: Grid, href: "/#tools" },
@@ -63,8 +63,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             ].map((item) => {
               const Icon = item.icon;
               return (
-                <a key={item.name} href={item.href} className="flex flex-col items-center justify-center w-16 h-12 rounded-full text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-slate-700/50 dark:text-slate-400 dark:hover:text-blue-400 transition-all">
-                  <Icon className="w-5 h-5" />
+                <a key={item.name} href={item.href} className="flex flex-col items-center justify-center w-14 h-11 rounded-full text-slate-500 hover:text-blue-600 hover:bg-blue-50/50 dark:hover:bg-slate-700/50 dark:text-slate-400 dark:hover:text-blue-400 transition-all">
+                  <Icon className="w-[18px] h-[18px]" />
                   <span className="text-[9px] font-semibold mt-0.5">{item.name}</span>
                 </a>
               );
