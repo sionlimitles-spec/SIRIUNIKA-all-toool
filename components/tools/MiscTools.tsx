@@ -11,13 +11,39 @@ import {
 type ApiMediaItem = { label?: string; type?: string; url: string; };
 type ApiResponse = { success: boolean; normalized?: { media?: ApiMediaItem[]; }; error?: { message: string }; result?: any; };
 
-// Helper untuk memberikan style badge pada opsi download
+// --- KONFIGURASI API FALLBACK ---
+const API_CONFIG = {
+  tiktok: [
+    { name: "TikWM", url: (u: string) => `https://www.tikwm.com/api/?url=${encodeURIComponent(u)}` },
+    { name: "BTCH", url: (u: string) => `https://btch-downloader-api-green.vercel.app/api/download/tiktok?url=${encodeURIComponent(u)}` },
+    { name: "Tiklydown", url: (u: string) => `https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(u)}` }
+  ],
+  instagram: [
+    { name: "BTCH", url: (u: string) => `https://btch-downloader-api-green.vercel.app/api/download/instagram?url=${encodeURIComponent(u)}` },
+    { name: "Snapinsta", url: (u: string) => `https://api.snapinsta.app/api/instagram?url=${encodeURIComponent(u)}` },
+    { name: "IGram", url: (u: string) => `https://api.igram.world/api/download?url=${encodeURIComponent(u)}` }
+  ],
+  youtube: [
+    { name: "BTCH", url: (u: string) => `https://btch-downloader-api-green.vercel.app/api/download/youtube?url=${encodeURIComponent(u)}` },
+    { name: "Cobalt", url: (u: string) => `https://api.cobalt.tools/api/json` }, // Cobalt butuh POST, akan ditangani khusus
+    { name: "Vevioz", url: (u: string) => `https://api.vevioz.com/api/button/mp3/${u.split('v=')[1]?.split('&')[0] || u.split('/').pop()}` }
+  ],
+  pinterest: [
+    { name: "BTCH", url: (u: string) => `https://btch-downloader-api-green.vercel.app/api/download/pinterest?url=${encodeURIComponent(u)}` }
+  ]
+};
+
 const getBadgeStyle = (label: string = "") => {
   const l = label.toLowerCase();
   if (l.includes('hd') || l.includes('1080')) return "bg-gradient-to-r from-red-500 to-orange-500 text-white";
-  if (l.includes('nowm') || l.includes('no watermark') || l.includes('no_wm')) return "bg-gradient-to-r from-green-500 to-emerald-500 text-white";
+  if (l.includes('nowm') || l.includes('no watermark')) return "bg-gradient-to-r from-green-500 to-emerald-500 text-white";
   if (l.includes('mp3') || l.includes('audio')) return "bg-gradient-to-r from-purple-500 to-pink-500 text-white";
   return "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300";
+};
+
+const getPinterestOriginalUrl = (url: string) => {
+  if (url.includes('i.pinimg.com')) return url.replace(/\/(236x|474x|564x|736x|1200x)\//, '/originals/');
+  return url;
 };
 
 export default function MiscTools({ slug }: { slug: string }) {
@@ -25,6 +51,7 @@ export default function MiscTools({ slug }: { slug: string }) {
   const [text, setText] = useState("");
   const [url, setUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingMsg, setLoadingMsg] = useState("");
   const [mediaList, setMediaList] = useState<ApiMediaItem[]>([]);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState<"video" | "audio" | "image">("video");
@@ -40,63 +67,113 @@ export default function MiscTools({ slug }: { slug: string }) {
 
   const isDownloader = ["tiktok-downloader", "youtube-downloader", "instagram-downloader", "spotify-downloader", "all-media-downloader", "pinterest-downloader"].includes(slug);
 
-  const extractMedia = (data: ApiResponse): ApiMediaItem[] => {
+  // FUNGSI UNIVERSAL UNTUK EKSTRAK LINK DARI BERBAGAI STRUKTUR API
+  const extractMediaFromRaw = (raw: any, platform: string): ApiMediaItem[] => {
     let items: ApiMediaItem[] = [];
-    if (data.normalized?.media && Array.isArray(data.normalized.media)) {
-      items = data.normalized.media.filter((item) => item.url);
-    } else if (data.result) {
+    
+    // 1. Coba baca dari format normalized (BTCH)
+    if (raw.normalized?.media && Array.isArray(raw.normalized.media)) {
+      items = raw.normalized.media.map((m: any) => ({
+        url: m.url,
+        label: m.label || m.type,
+        type: m.type || (m.url.match(/\.(mp4)/) ? 'video' : m.url.match(/\.(mp3)/) ? 'audio' : 'image')
+      }));
+    } 
+    // 2. Coba baca dari format result (TikWM, Tiklydown, dll)
+    else if (raw.data || raw.result || raw.medias) {
+      const source = raw.data || raw.result || raw.medias;
       const traverse = (obj: any) => {
         if (obj && typeof obj === "object") {
+          // Jika objek punya URL
           if (typeof obj.url === "string" && obj.url.startsWith("http")) {
-            // Mempercantik label bawaan API menjadi lebih rapi
-            let rawLabel = obj.label || obj.quality || obj.type || "Media";
-            let cleanLabel = rawLabel.replace(/_/g, " ").toUpperCase();
-            if (cleanLabel === "MEDIA") cleanLabel = "ORIGINAL QUALITY";
-
+            let label = obj.label || obj.quality || obj.type || "Original";
+            // Normalisasi label
+            label = label.replace(/_/g, " ").toUpperCase();
+            if (label === "ORIGINAL") label = platform === 'tiktok' ? "HD NO WATERMARK" : "ORIGINAL";
+            
             items.push({ 
               url: obj.url, 
-              label: cleanLabel, 
-              type: obj.type || (obj.url.match(/\.(mp4|webm)/i) ? 'video' : obj.url.match(/\.(mp3|m4a|wav)/i) ? 'audio' : 'image')
+              label, 
+              type: obj.type || (obj.url.match(/\.(mp4)/) ? 'video' : obj.url.match(/\.(mp3|m4a)/) ? 'audio' : 'image')
             });
           }
           Object.values(obj).forEach(traverse);
         }
       };
-      traverse(data.result);
+      traverse(source);
     }
+    
+    // 3. Penyesuaian khusus per platform
+    if (platform === "pinterest") {
+      items = items.map(item => ({
+        ...item,
+        url: getPinterestOriginalUrl(item.url),
+        label: "HD ORIGINAL QUALITY"
+      }));
+    }
+    
+    // Hilangkan duplikat berdasarkan URL
     return Array.from(new Map(items.map(item => [item.url, item])).values());
   };
 
   const handleDownload = async () => {
     if (!url) return;
     setIsLoading(true); setError(""); setMediaList([]);
+    
+    let platform = slug.replace("-downloader", "");
+    if (platform === "all-media") platform = "aio";
+    
+    const apis = (API_CONFIG as any)[platform] || API_CONFIG.tiktok;
+    let success = false;
+    let lastError = "Gagal mengambil media.";
 
-    try {
-      let platform = slug.replace("-downloader", "");
-      if (platform === "all-media") platform = "aio";
-      if (platform === "pinterest") platform = "pinterest";
+    // Loop melalui daftar API (Fallback Mechanism)
+    for (let i = 0; i < apis.length; i++) {
+      const api = apis[i];
+      setLoadingMsg(`Mencoba server ${api.name}...`);
+      
+      try {
+        let response;
+        if (api.name === "Cobalt") {
+          // Cobalt butuh POST
+          response = await fetch(api.url(url), {
+            method: 'POST',
+            headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url })
+          });
+        } else {
+          response = await fetch(api.url(url));
+        }
 
-      const apiUrl = `https://btch-downloader-api-green.vercel.app/api/download/${platform}?url=${encodeURIComponent(url)}`;
-      
-      const response = await fetch(apiUrl);
-      const data: ApiResponse = await response.json();
-
-      if (!data.success) throw new Error(data.error?.message || "Gagal mengambil media.");
-      
-      const extracted = extractMedia(data);
-      if (extracted.length === 0) throw new Error("Media tidak ditemukan. Pastikan link publik.");
-      
-      setMediaList(extracted);
-      
-      if (extracted.some(i => i.type?.includes('audio') || i.url.includes('.mp3'))) setActiveTab("audio");
-      else if (extracted.some(i => i.type?.includes('image') || i.url.match(/\.(jpg|jpeg|png)/i))) setActiveTab("image");
-      else setActiveTab("video");
-
-    } catch (err: any) {
-      setError(err.message || "Server API sedang sibuk.");
-    } finally {
-      setIsLoading(false);
+        if (!response.ok) throw new Error(`Server ${api.name} menolak.`);
+        const data = await response.json();
+        
+        const extracted = extractMediaFromRaw(data, platform);
+        if (extracted.length > 0) {
+          setMediaList(extracted);
+          success = true;
+          
+          // Atur tab default
+          if (extracted.some(m => m.type?.includes('audio'))) setActiveTab("audio");
+          else if (extracted.some(m => m.type?.includes('video'))) setActiveTab("video");
+          else setActiveTab("image");
+          
+          break; // Keluar dari loop jika berhasil
+        } else {
+          throw new Error(`Server ${api.name} tidak mengembalikan link.`);
+        }
+      } catch (err: any) {
+        lastError = err.message;
+        // Lanjut ke API berikutnya
+      }
     }
+
+    if (!success) {
+      setError(`Semua server sedang sibuk atau link tidak valid. (Error: ${lastError})`);
+    }
+    
+    setIsLoading(false);
+    setLoadingMsg("");
   };
 
   const handleCopy = (text: string, index: number) => {
@@ -122,25 +199,25 @@ export default function MiscTools({ slug }: { slug: string }) {
     return (
       <div className="space-y-6 pb-10 animate-fade-in-up">
         
-        {/* Header Info */}
         <div className="text-center space-y-3 relative pt-2">
           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-32 h-32 bg-blue-500/20 blur-3xl rounded-full pointer-events-none"></div>
           <h3 className="font-extrabold text-2xl text-slate-800 dark:text-white relative z-10">
             {isPinterest ? "Pinterest HD" : "Media Downloader"}
           </h3>
           <p className="text-xs text-slate-500 dark:text-slate-400 max-w-[280px] mx-auto relative z-10 leading-relaxed">
-            {isTikTok ? "Dapatkan video HD tanpa watermark, audio MP3, atau slide foto." : "Unduh media dengan kualitas maksimal secara instan."}
+            {isPinterest ? "Sistem akan otomatis mengambil gambar resolusi asli." : 
+             isTikTok ? "Dapatkan video HD tanpa watermark, audio MP3, atau slide foto." : 
+             "Unduh media dengan kualitas maksimal secara instan."}
           </p>
         </div>
 
-        {/* Input Field Premium */}
         <div className="relative group">
           <div className="absolute -inset-1 bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 rounded-2xl blur opacity-25 group-hover:opacity-50 transition duration-500"></div>
           <div className="relative flex items-center bg-white dark:bg-slate-800 rounded-2xl p-1.5 shadow-sm border border-slate-100 dark:border-slate-700">
             <div className="pl-3 pr-2 text-slate-400"><LinkIcon className="w-5 h-5" /></div>
             <input
               type="url"
-              placeholder="Tempel link video di sini..."
+              placeholder="Tempel link di sini..."
               className="flex-1 bg-transparent py-2 text-sm focus:outline-none placeholder:text-slate-400 font-medium"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
@@ -163,15 +240,15 @@ export default function MiscTools({ slug }: { slug: string }) {
           </div>
         )}
 
-        {/* Loading Skeleton */}
         {isLoading && (
-          <div className="space-y-4 pt-4 animate-pulse">
+          <div className="space-y-4 pt-4 animate-pulse text-center">
+            <div className="flex justify-center mb-2"><Loader2 className="w-8 h-8 text-blue-500 animate-spin" /></div>
+            <p className="text-xs font-medium text-slate-500">{loadingMsg || "Memproses media..."}</p>
             <div className="h-64 bg-slate-200 dark:bg-slate-800 rounded-3xl w-full"></div>
             <div className="h-16 bg-slate-200 dark:bg-slate-800 rounded-2xl w-full"></div>
           </div>
         )}
 
-        {/* HASIL DOWNLOAD */}
         {!isLoading && mediaList.length > 0 && (
           <div className="space-y-6 animate-fade-in-up">
             
@@ -189,7 +266,6 @@ export default function MiscTools({ slug }: { slug: string }) {
               </div>
             )}
 
-            {/* TIKTOK SLIDE CAROUSEL */}
             {isTikTok && activeTab === 'image' && filteredMedia.length > 1 ? (
               <div className="space-y-3">
                 <div className="flex items-center gap-2 px-1">
@@ -212,29 +288,28 @@ export default function MiscTools({ slug }: { slug: string }) {
                 </div>
               </div>
             ) : (
-              // PREVIEW & MULTI-OPTIONS
               filteredMedia.map((media, idx) => (
                 <div key={idx} className="space-y-3">
                   
-                  {/* PREVIEW BOX */}
-                  <div className="rounded-3xl overflow-hidden shadow-2xl bg-black/90 border border-slate-700/50">
+                  {/* PERBAIKAN PREVIEW: Tanpa Letterbox, Tinggi Menyesuaikan Video */}
+                  <div className="rounded-3xl overflow-hidden shadow-2xl bg-black/90 border border-slate-700/50 flex justify-center">
                     {activeTab === 'video' && (
-                      <div className="relative aspect-[9/16] max-h-[400px] w-full flex items-center justify-center">
-                        <video src={media.url} controls playsInline className="w-full h-full object-contain" />
+                      <div className="relative w-full max-h-[450px] flex items-center justify-center bg-black">
+                        <video src={media.url} controls playsInline className="w-full h-auto max-h-[450px] object-contain" />
                       </div>
                     )}
                     {activeTab === 'image' && (
-                      <div className="relative bg-slate-900 flex items-center justify-center max-h-[400px]">
-                        <img src={media.url} alt="Preview" className={`w-full object-contain ${isPinterest ? 'contrast-105 saturate-105' : ''}`} />
+                      <div className="relative bg-slate-900 flex items-center justify-center w-full max-h-[450px]">
+                        <img src={media.url} alt="Preview" className={`w-full h-auto max-h-[450px] object-contain ${isPinterest ? 'contrast-105 saturate-105' : ''}`} />
                         {isPinterest && (
-                          <div className="absolute top-3 left-3 bg-red-500 text-white text-[10px] font-bold px-2.5 py-1 rounded-md shadow-lg flex items-center gap-1">
-                            <Zap className="w-3 h-3" /> HD 1080p
+                          <div className="absolute top-3 left-3 bg-gradient-to-r from-red-500 to-orange-500 text-white text-[10px] font-bold px-2.5 py-1 rounded-md shadow-lg flex items-center gap-1">
+                            <Zap className="w-3 h-3" /> HD 1080p Original
                           </div>
                         )}
                       </div>
                     )}
                     {activeTab === 'audio' && (
-                      <div className="bg-gradient-to-r from-slate-800 to-slate-900 p-5 flex items-center gap-4">
+                      <div className="bg-gradient-to-r from-slate-800 to-slate-900 p-5 flex items-center gap-4 w-full">
                         <div className="w-14 h-14 rounded-full bg-purple-500/20 flex items-center justify-center shrink-0">
                           <Music className="w-7 h-7 text-purple-400" />
                         </div>
@@ -246,14 +321,14 @@ export default function MiscTools({ slug }: { slug: string }) {
                     )}
                   </div>
 
-                  {/* KARTU DOWNLOAD PREMIUM */}
+                  {/* KARTU DOWNLOAD & OPSI */}
                   <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-lg border border-slate-100 dark:border-slate-700 flex flex-col gap-3">
                     <div className="flex items-center justify-between">
                       <div className="flex flex-col">
                         <div className="flex items-center gap-2 mb-1">
-                          {/* BADGE LOGIC */}
                           <span className={`px-2 py-0.5 text-[10px] font-extrabold rounded-md tracking-wider ${getBadgeStyle(media.label)}`}>
-                            {media.label?.includes('HD') || media.label?.includes('1080') ? 'HD' : 
+                            {isPinterest ? 'HD ORIGINAL' : 
+                             media.label?.includes('HD') ? 'HD' : 
                              media.label?.includes('NOWM') ? 'NO WM' : 
                              activeTab === 'audio' ? 'MP3' : 'ORIGINAL'}
                           </span>
@@ -283,7 +358,6 @@ export default function MiscTools({ slug }: { slug: string }) {
     );
   }
 
-  // --- UI QR GENERATOR ---
   if (slug === "qr-generator") {
     return (
       <div className="space-y-6 flex flex-col items-center animate-fade-in-up pb-10">
