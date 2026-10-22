@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import QRCode from "qrcode";
 import { 
   Download, Link as LinkIcon, AlertCircle, Loader2, 
-  Image as ImageIcon, Video, Music, Star, Construction, ClipboardPaste
+  Image as ImageIcon, Video, Music, Star, Construction, ClipboardPaste,
+  Zap, MonitorPlay, ShieldAlert
 } from "lucide-react";
 
 const WORKER_URL = "https://shiriunika-proxy.sionlimitles.workers.dev"; 
@@ -42,6 +43,13 @@ export default function MiscTools({ slug }: { slug: string }) {
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState<"video" | "audio" | "image">("video");
   const [spotifyData, setSpotifyData] = useState<{ title: string, artist: string, thumbnail: string, tracks: any[] } | null>(null);
+
+  // State untuk WebSR (Upscaler)
+  const [isUpscaling, setIsUpscaling] = useState(false);
+  const [upscaleError, setUpscaleError] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const webSRRef = useRef<any>(null);
 
   useEffect(() => {
     if (slug === "qr-generator" && text) {
@@ -117,8 +125,9 @@ export default function MiscTools({ slug }: { slug: string }) {
         if (items.length > 0) {
           if (platform !== "tiktok") items = Array.from(new Map(items.map(item => [item.url, item])).values());
           setMediaList(items); success = true; saveToHistory(platform, url, `Media ${platform}`);
-          if (items.some(m => m.type?.includes('audio'))) setActiveTab("audio");
-          else if (items.some(m => m.type?.includes('video'))) setActiveTab("video"); else setActiveTab("image");
+          if (items.some(m => m.type?.includes('video'))) setActiveTab("video");
+          else if (items.some(m => m.type?.includes('audio'))) setActiveTab("audio");
+          else setActiveTab("image");
           break; 
         } else throw new Error(`Tidak ada link`);
       } catch (err: any) { lastError = err.message; }
@@ -129,6 +138,69 @@ export default function MiscTools({ slug }: { slug: string }) {
 
   const handleDownloadAll = async (medias: ApiMediaItem[]) => {
     for (let i = 0; i < medias.length; i++) { window.open(medias[i].url, '_blank'); await new Promise(r => setTimeout(r, 800)); }
+  };
+
+  // --- LOGIKA WEBSR VIA CDN (TANPA NPM INSTALL) ---
+  const startUpscaling = async () => {
+    if (!videoRef.current || !canvasRef.current) return;
+    setIsUpscaling(true);
+    setUpscaleError(null);
+
+    try {
+      // 1. Cek WebGPU
+      if (!navigator.gpu) throw new Error("Perangkat kamu belum mendukung WebGPU.");
+
+      // 2. Import library WebSR secara dinamis dari CDN (esm.sh)
+      const WebSRModule = await import("https://esm.sh/@websr/websr" as any);
+      const WebSR = WebSRModule.default;
+
+      // 3. Ambil file model AI (weights) langsung dari GitHub
+      setLoadingMsg("Mengunduh model AI (mohon tunggu)...");
+      const weightsUrl = "https://raw.githubusercontent.com/sb2702/websr/main/weights/anime4k/cnn-2x-s.json";
+      const weights = await (await fetch(weightsUrl)).json();
+
+      // 4. Inisialisasi
+      const gpu = await WebSR.initWebGPU();
+      const websr = new WebSR({
+        network_name: "anime4k/cnn-2x-s",
+        weights: weights,
+        gpu: gpu,
+        canvas: canvasRef.current,
+      });
+      webSRRef.current = websr;
+
+      // 5. Sembunyikan video, tampilkan canvas
+      videoRef.current.style.display = 'none';
+      canvasRef.current.style.display = 'block';
+
+      // 6. Render loop (Upscale frame demi frame)
+      const renderFrame = () => {
+        if (!videoRef.current || !webSRRef.current) return;
+        webSRRef.current.render(videoRef.current).then(() => {
+          videoRef.current?.requestVideoFrameCallback(renderFrame);
+        });
+      };
+      videoRef.current.requestVideoFrameCallback(renderFrame);
+      
+    } catch (err: any) {
+      setUpscaleError(err.message || "Gagal memuat AI.");
+      if (videoRef.current) videoRef.current.style.display = 'block';
+      if (canvasRef.current) canvasRef.current.style.display = 'none';
+    } finally {
+      setIsUpscaling(false);
+      setLoadingMsg("");
+    }
+  };
+
+  const stopUpscaling = () => {
+    if (videoRef.current) videoRef.current.style.display = 'block';
+    if (canvasRef.current) {
+      canvasRef.current.style.display = 'none';
+      const ctx = canvasRef.current.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    }
+    webSRRef.current = null;
+    setUpscaleError(null);
   };
 
   if (isDownloader) {
@@ -164,7 +236,6 @@ export default function MiscTools({ slug }: { slug: string }) {
 
         {error && <div className="p-4 bg-red-50 text-red-600 text-xs rounded-xl flex items-start gap-3 animate-in slide-in-from-top-2"><AlertCircle className="w-5 h-5 shrink-0" /><p>{error}</p></div>}
         
-        {/* LOADING ANIMASI BARU */}
         {isLoading && (
           <div className="flex flex-col items-center justify-center py-10 space-y-4">
             <div className="relative w-16 h-16">
@@ -200,32 +271,58 @@ export default function MiscTools({ slug }: { slug: string }) {
           </div>
         )}
 
-        {/* UI HASIL DOWNLOAD */}
+        {/* UI HASIL DOWNLOAD & WEBSR */}
         {!isLoading && mediaList.length > 0 && (
           <div className="space-y-4 animate-fade-in-up">
             
             {hasMultipleTypes && (
               <div className="flex bg-slate-100 dark:bg-slate-800 p-1.5 rounded-2xl relative">
                 {mediaList.some(m => m.type?.includes('video') || m.url.includes('.mp4')) && (
-                  <button onClick={() => setActiveTab("video")} className={`flex-1 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all duration-300 ${activeTab === 'video' ? 'bg-white dark:bg-slate-700 shadow-sm text-blue-600 scale-105' : 'text-slate-500'}`}><Video className="w-4 h-4" /> Video</button>
+                  <button onClick={() => { setActiveTab("video"); stopUpscaling(); }} className={`flex-1 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all duration-300 ${activeTab === 'video' ? 'bg-white dark:bg-slate-700 shadow-sm text-blue-600 scale-105' : 'text-slate-500'}`}><Video className="w-4 h-4" /> Video</button>
                 )}
                 {mediaList.some(m => m.type?.includes('audio') || m.url.includes('.mp3')) && (
-                  <button onClick={() => setActiveTab("audio")} className={`flex-1 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all duration-300 ${activeTab === 'audio' ? 'bg-white dark:bg-slate-700 shadow-sm text-purple-600 scale-105' : 'text-slate-500'}`}><Music className="w-4 h-4" /> Audio</button>
+                  <button onClick={() => { setActiveTab("audio"); stopUpscaling(); }} className={`flex-1 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all duration-300 ${activeTab === 'audio' ? 'bg-white dark:bg-slate-700 shadow-sm text-purple-600 scale-105' : 'text-slate-500'}`}><Music className="w-4 h-4" /> Audio</button>
                 )}
                 {mediaList.some(m => m.type?.includes('image')) && (
-                  <button onClick={() => setActiveTab("image")} className={`flex-1 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all duration-300 ${activeTab === 'image' ? 'bg-white dark:bg-slate-700 shadow-sm text-orange-600 scale-105' : 'text-slate-500'}`}><ImageIcon className="w-4 h-4" /> Gambar</button>
+                  <button onClick={() => { setActiveTab("image"); stopUpscaling(); }} className={`flex-1 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all duration-300 ${activeTab === 'image' ? 'bg-white dark:bg-slate-700 shadow-sm text-orange-600 scale-105' : 'text-slate-500'}`}><ImageIcon className="w-4 h-4" /> Gambar</button>
                 )}
               </div>
             )}
 
-            {!isSpotify && (
+            {!isSpotify && activeTab === 'video' && filteredMedia[0] && (
+              <div className="relative rounded-2xl overflow-hidden bg-black flex flex-col justify-center shadow-lg border border-slate-700/50">
+                <div className="relative w-full max-w-[280px] aspect-[9/16] mx-auto flex items-center justify-center bg-black">
+                  <video ref={videoRef} src={filteredMedia[0].url} controls playsInline crossOrigin="anonymous" className="w-full h-full object-contain" />
+                  <canvas ref={canvasRef} className="w-full h-full object-contain hidden" />
+                </div>
+                
+                {/* PANEL KONTROL WEBSR */}
+                <div className="p-3 bg-slate-900/80 backdrop-blur-md border-t border-slate-700 flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
+                    <Zap className="w-4 h-4 text-yellow-400" />
+                    AI Upscaler (WebSR)
+                  </div>
+                  {!upscaleError ? (
+                    <button 
+                      onClick={isUpscaling ? undefined : (canvasRef.current?.style.display === 'block' ? stopUpscaling : startUpscaling)}
+                      disabled={isUpscaling}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all active:scale-95 flex items-center gap-1.5 ${canvasRef.current?.style.display === 'block' ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 'bg-blue-600 text-white hover:bg-blue-700 shadow-md'}`}
+                    >
+                      {isUpscaling ? <Loader2 className="w-3 h-3 animate-spin" /> : <MonitorPlay className="w-3 h-3" />}
+                      {isUpscaling ? 'Memuat AI...' : canvasRef.current?.style.display === 'block' ? 'Matikan AI' : 'Upscale AI 2x'}
+                    </button>
+                  ) : (
+                    <div className="text-[10px] text-red-400 flex items-center gap-1">
+                      <ShieldAlert className="w-3 h-3" /> {upscaleError}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {!isSpotify && activeTab === 'image' && filteredMedia[0] && (
               <div className="rounded-2xl overflow-hidden bg-black flex justify-center shadow-lg">
-                {activeTab === 'video' && filteredMedia[0] && (
-                   <div className="w-full max-w-[280px] aspect-[9/16] mx-auto flex items-center justify-center bg-black">
-                     <video src={filteredMedia[0].url} controls playsInline className="w-full h-full object-contain" />
-                   </div>
-                )}
-                {activeTab === 'image' && filteredMedia[0] && <img src={filteredMedia[0].url} alt="Preview" className="w-full max-h-[350px] object-contain" />}
+                <img src={filteredMedia[0].url} alt="Preview" className="w-full max-h-[350px] object-contain" />
               </div>
             )}
 
@@ -249,7 +346,6 @@ export default function MiscTools({ slug }: { slug: string }) {
                       </span>
                     </div>
                     
-                    {/* TOMBOL DOWNLOAD DENGAN ANIMASI */}
                     <a href={media.url} target="_blank" rel="noopener noreferrer" className={`w-full py-2.5 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 active:scale-95 shadow-md transition-all ${media.isHD ? 'bg-gradient-to-r from-orange-500 to-red-500 animate-pulse-glow' : isSpotify ? 'bg-green-500 hover:bg-green-600 text-black' : 'bg-slate-900 dark:bg-blue-600 hover:bg-black dark:hover:bg-blue-700'}`}>
                       <Download className="w-4 h-4" /> Unduh File
                     </a>
