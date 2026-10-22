@@ -4,12 +4,24 @@ import { useState, useEffect } from "react";
 import QRCode from "qrcode";
 import { 
   Download, Link as LinkIcon, AlertCircle, Loader2, 
-  Image as ImageIcon, Video, Music, Sparkles, Copy, CheckCircle2,
-  ShieldCheck, Zap, Star, Construction, Play, Disc, Headphones
+  Image as ImageIcon, Video, Music, Copy, CheckCircle2,
+  Star, Construction, ClipboardPaste, Headphones, ListMusic, Play
 } from "lucide-react";
 
 type ApiMediaItem = { label?: string; type?: string; url: string; size?: string; isHD?: boolean; thumbnail?: string; artist?: string; title?: string; };
 type ApiResponse = { success?: boolean; normalized?: { media?: ApiMediaItem[]; }; error?: { message: string }; data?: any; result?: any; status?: string; url?: string; };
+
+// Helper Simpan Riwayat
+const saveToHistory = (platform: string, url: string, title: string, thumbnail?: string) => {
+  try {
+    const history = JSON.parse(localStorage.getItem('shiriunika_history') || '[]');
+    const newItem = { id: Date.now(), platform, url, title, thumbnail, date: new Date().toISOString() };
+    // Cek duplikat
+    const filtered = history.filter((h: any) => h.url !== url);
+    filtered.unshift(newItem);
+    localStorage.setItem('shiriunika_history', JSON.stringify(filtered.slice(0, 10))); // Simpan 10 terakhir
+  } catch (e) {}
+};
 
 const API_CONFIG: Record<string, { name: string, url: (u: string) => string, method?: string }[]> = {
   tiktok: [
@@ -26,9 +38,6 @@ const API_CONFIG: Record<string, { name: string, url: (u: string) => string, met
   pinterest: [
     { name: "BTCH", url: (u) => `https://btch-downloader-api-green.vercel.app/api/download/pinterest?url=${encodeURIComponent(u)}` }
   ],
-  spotify: [
-    { name: "BTCH", url: (u) => `https://btch-downloader-api-green.vercel.app/api/download/spotify?url=${encodeURIComponent(u)}` }
-  ],
   aio: [
     { name: "Cobalt AIO", url: () => `https://api.cobalt.tools/api/json`, method: "POST" },
     { name: "BTCH AIO", url: (u) => `https://btch-downloader-api-green.vercel.app/api/download/aio?url=${encodeURIComponent(u)}` }
@@ -44,6 +53,10 @@ export default function MiscTools({ slug }: { slug: string }) {
   const [mediaList, setMediaList] = useState<ApiMediaItem[]>([]);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState<"video" | "audio" | "image">("video");
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  
+  // State untuk Spotify (Album/Playlist)
+  const [spotifyData, setSpotifyData] = useState<{ title: string, artist: string, thumbnail: string, tracks: any[] } | null>(null);
 
   useEffect(() => {
     if (slug === "qr-generator" && text) {
@@ -59,70 +72,86 @@ export default function MiscTools({ slug }: { slug: string }) {
   ];
   const isDownloader = supportedDownloaders.includes(slug);
 
-  const extractMediaFromRaw = (raw: any, platform: string): ApiMediaItem[] => {
-    let items: ApiMediaItem[] = [];
+  // --- AUTO PASTE CLIPBOARD ---
+  const handlePaste = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) setUrl(text);
+    } catch (err) {
+      alert("Browser memblokir akses clipboard. Silakan tempel manual.");
+    }
+  };
+
+  // --- LOGIKA API SPOTIFY KHUSUS ---
+  const fetchSpotify = async (inputUrl: string) => {
+    setIsLoading(true); setError(""); setMediaList([]); setSpotifyData(null);
     
-    // --- TIKTOK ---
-    if (platform === "tiktok" && raw.data) {
-      const d = raw.data;
-      if (d.play) items.push({ url: d.play, label: "No Watermark", type: "video", size: d.size ? (d.size/1024/1024).toFixed(1)+" MB" : "" });
-      if (d.hdplay || d.play) items.push({ url: d.hdplay || `${d.play}?hd=1`, label: "HD + No Watermark", type: "video", isHD: true });
-      if (d.music || d.music_info?.play) items.push({ url: d.music || d.music_info.play, label: "Audio MP3", type: "audio" });
-    }
-    // --- SPOTIFY (Metadata khusus) ---
-    else if (platform === "spotify") {
-      const d = raw.data || raw.result || raw;
-      if (d.url) {
-        items.push({ 
-          url: d.url, 
-          label: "Audio MP3", 
-          type: "audio",
-          title: d.title || "Unknown Track",
-          artist: d.artist || "Unknown Artist",
-          thumbnail: d.thumbnail || d.cover || ""
-        });
-      }
-    }
-    // --- PINTEREST ---
-    else if (platform === "pinterest") {
-      const source = raw.normalized?.media || raw.data || raw.result || [];
-      const traverse = (obj: any) => {
-        if (obj && typeof obj === "object") {
-          if (typeof obj.url === "string" && obj.url.startsWith("http")) {
-            items.push({ url: obj.url, label: "Gambar Original", type: "image" });
-            const hd = obj.url.replace(/\/(236x|474x|564x|736x|1200x)\//, '/originals/');
-            if (hd !== obj.url) items.push({ url: hd, label: "HD 1080p Original", type: "image", isHD: true });
-          }
-          Object.values(obj).forEach(traverse);
+    try {
+      // Ekstrak ID dari URL Spotify
+      const isTrack = inputUrl.includes("/track/");
+      const isAlbum = inputUrl.includes("/album/");
+      const isPlaylist = inputUrl.includes("/playlist/");
+      
+      if (!isTrack && !isAlbum && !isPlaylist) throw new Error("Link Spotify tidak valid.");
+      
+      const id = inputUrl.split(isTrack ? "/track/" : isAlbum ? "/album/" : "/playlist/")[1]?.split("?")[0];
+      if (!id) throw new Error("ID Spotify tidak ditemukan.");
+
+      const headers = { 'Origin': 'https://spotifydown.com', 'Referer': 'https://spotifydown.com/' };
+      
+      if (isTrack) {
+        setLoadingMsg("Mengambil data track...");
+        const res = await fetch(`https://api.spotifydown.com/metadata/track/${id}`, { headers });
+        const meta = await res.json();
+        
+        setLoadingMsg("Mengambil link download...");
+        const dlRes = await fetch(`https://api.spotifydown.com/download/${id}`, { headers });
+        const dlData = await dlRes.json();
+        
+        if (dlData.success && dlData.link) {
+          setMediaList([{ 
+            url: dlData.link, 
+            label: "Audio MP3 (320kbps)", 
+            type: "audio", 
+            title: meta.metadata?.title, 
+            artist: meta.metadata?.artists, 
+            thumbnail: meta.metadata?.cover 
+          }]);
+          saveToHistory("Spotify", inputUrl, meta.metadata?.title || "Spotify Track", meta.metadata?.cover);
+        } else {
+          throw new Error("Gagal mendapatkan link MP3.");
         }
-      };
-      traverse(source);
-    }
-    // --- COBALT / BTCH ---
-    else {
-      if (raw.normalized?.media) {
-        items = raw.normalized.media.map((m: any) => ({
-          url: m.url, label: m.label || m.type || "Original Quality", type: m.type || (m.url.match(/\.(mp4)/) ? 'video' : m.url.match(/\.(mp3|m4a)/) ? 'audio' : 'image')
-        }));
-      } else if (raw.data || raw.result) {
-        const traverse = (obj: any) => {
-          if (obj && typeof obj === "object") {
-            if (typeof obj.url === "string" && obj.url.startsWith("http")) {
-              items.push({ url: obj.url, label: obj.label || obj.quality || "Original Quality", type: obj.type || (obj.url.match(/\.(mp4)/) ? 'video' : obj.url.match(/\.(mp3)/) ? 'audio' : 'image') });
-            }
-            Object.values(obj).forEach(traverse);
-          }
-        };
-        traverse(raw.data || raw.result);
-      } else if (raw.url) {
-        items.push({ url: raw.url, label: "Video / Audio", type: raw.url.includes('.mp3') ? 'audio' : 'video' });
+      } 
+      else if (isAlbum || isPlaylist) {
+        setLoadingMsg(`Mengambil daftar lagu ${isAlbum ? 'album' : 'playlist'}...`);
+        const metaRes = await fetch(`https://api.spotifydown.com/metadata/${isAlbum ? 'album' : 'playlist'}/${id}`, { headers });
+        const meta = await metaRes.json();
+        
+        if (!meta.success) throw new Error("Gagal mengambil metadata album/playlist.");
+        
+        setSpotifyData({
+          title: meta.metadata?.title || "Unknown Album",
+          artist: meta.metadata?.artists || "Various Artists",
+          thumbnail: meta.metadata?.cover || "",
+          tracks: meta.trackList || []
+        });
+        setActiveTab("audio");
+        saveToHistory("Spotify", inputUrl, meta.metadata?.title || "Spotify Collection", meta.metadata?.cover);
       }
+    } catch (err: any) {
+      setError(err.message || "Gagal mengambil data Spotify. Pastikan link publik.");
+    } finally {
+      setIsLoading(false);
     }
-    return Array.from(new Map(items.map(item => [item.url, item])).values());
   };
 
   const handleDownload = async () => {
     if (!url) return;
+    
+    if (slug === "spotify-downloader") {
+      return fetchSpotify(url);
+    }
+
     setIsLoading(true); setError(""); setMediaList([]);
     
     let platform = slug.replace("-downloader", "");
@@ -136,7 +165,7 @@ export default function MiscTools({ slug }: { slug: string }) {
 
     for (let i = 0; i < apis.length; i++) {
       const api = apis[i];
-      setLoadingMsg(`Menghubungkan ke ${api.name}...`);
+      setLoadingMsg(`Mencoba ${api.name}...`);
       try {
         const fetchOptions: RequestInit = { method: api.method || "GET" };
         if (api.method === "POST") {
@@ -146,13 +175,27 @@ export default function MiscTools({ slug }: { slug: string }) {
         const response = await fetch(api.url(url), fetchOptions);
         if (!response.ok) throw new Error(`Server sibuk`);
         const data = await response.json();
-        const extracted = extractMediaFromRaw(data, platform);
         
-        if (extracted.length > 0) {
-          setMediaList(extracted);
+        // Ekstraksi Data (Sama seperti sebelumnya)
+        let items: ApiMediaItem[] = [];
+        if (platform === "tiktok" && data.data) {
+           const d = data.data;
+           if (d.play) items.push({ url: d.play, label: "No Watermark", type: "video" });
+           if (d.hdplay || d.play) items.push({ url: d.hdplay || `${d.play}?hd=1`, label: "HD + No Watermark", type: "video", isHD: true });
+           if (d.images) d.images.forEach((img: string, i: number) => items.push({ url: img, label: `Slide ${i+1}`, type: "image" }));
+           if (d.music) items.push({ url: d.music, label: "Audio MP3", type: "audio" });
+        } else if (data.normalized?.media) {
+           items = data.normalized.media.map((m: any) => ({ url: m.url, label: m.label || m.type, type: m.type }));
+        } else if (data.url) {
+           items.push({ url: data.url, label: "Video / Audio", type: data.url.includes('.mp3') ? 'audio' : 'video' });
+        }
+
+        if (items.length > 0) {
+          setMediaList(items);
           success = true;
-          if (extracted.some(m => m.type?.includes('audio'))) setActiveTab("audio");
-          else if (extracted.some(m => m.type?.includes('video'))) setActiveTab("video");
+          saveToHistory(slug.split('-')[0], url, `Media ${slug.split('-')[0]}`);
+          if (items.some(m => m.type?.includes('audio'))) setActiveTab("audio");
+          else if (items.some(m => m.type?.includes('video'))) setActiveTab("video");
           else setActiveTab("image");
           break; 
         } else throw new Error(`Tidak ada link`);
@@ -163,17 +206,27 @@ export default function MiscTools({ slug }: { slug: string }) {
     setIsLoading(false);
   };
 
-  // ==========================================
-  // UI DOWNLOADER
-  // ==========================================
+  // --- DOWNLOAD ALL (UNTUK SLIDE) ---
+  const handleDownloadAll = async (medias: ApiMediaItem[]) => {
+    for (let i = 0; i < medias.length; i++) {
+       window.open(medias[i].url, '_blank');
+       await new Promise(r => setTimeout(r, 800)); // Jeda 0.8 detik agar browser tidak blokir
+    }
+  };
+
+  const handleCopy = (text: string, index: number) => {
+    navigator.clipboard.writeText(text);
+    setCopiedIndex(index);
+    setTimeout(() => setCopiedIndex(null), 2000);
+  };
+
   if (isDownloader) {
-    const isTikTok = slug === "tiktok-downloader";
-    const isPinterest = slug === "pinterest-downloader";
     const isSpotify = slug === "spotify-downloader";
+    const isTikTok = slug === "tiktok-downloader";
 
     const filteredMedia = mediaList.filter(m => {
       if (activeTab === "video") return m.type?.includes('video') || m.url.includes('.mp4');
-      if (activeTab === "audio") return m.type?.includes('audio') || m.url.includes('.mp3') || m.url.includes('.m4a');
+      if (activeTab === "audio") return m.type?.includes('audio') || m.url.includes('.mp3');
       return m.type?.includes('image') || m.url.match(/\.(jpg|jpeg|png|webp)/i);
     });
 
@@ -182,31 +235,34 @@ export default function MiscTools({ slug }: { slug: string }) {
     return (
       <div className="space-y-6 pb-10 animate-fade-in-up">
         
-        {/* HEADER */}
         <div className="text-center space-y-2 relative pt-2">
-          <h3 className="font-extrabold text-2xl text-slate-800 dark:text-white relative z-10 capitalize">
-            {slug.replace("-downloader", "").replace("-", " ")}
+          <h3 className="font-extrabold text-2xl text-slate-800 dark:text-white capitalize">
+            {slug.replace("-downloader", "").replace("-", " ")} Downloader
           </h3>
-          <p className="text-xs text-slate-500 dark:text-slate-400 max-w-[280px] mx-auto relative z-10 leading-relaxed">
-            {isPinterest ? "Unduh gambar resolusi asli atau versi HD (1080p)." : 
-             isSpotify ? "Konversi lagu Spotify menjadi MP3 dengan metadata lengkap." :
-             "Sistem otomatis mencari kualitas media terbaik untukmu."}
+          <p className="text-xs text-slate-500 max-w-[280px] mx-auto">
+            {isSpotify ? "Unduh lagu, album, atau playlist Spotify ke MP3." : "Pilih unduhan tanpa watermark (No WM) atau kualitas HD."}
           </p>
         </div>
 
-        {/* INPUT FORM */}
+        {/* INPUT AREA WITH CLIPBOARD */}
         <div className="relative group">
           <div className="absolute -inset-1 bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 rounded-2xl blur opacity-25 group-hover:opacity-50 transition duration-500"></div>
           <div className="relative flex items-center bg-white dark:bg-slate-800 rounded-2xl p-1.5 shadow-sm border border-slate-100 dark:border-slate-700">
             <div className="pl-3 pr-2 text-slate-400"><LinkIcon className="w-5 h-5" /></div>
-            <input type="url" placeholder={`Tempel link ${slug.split('-')[0]}...`} className="flex-1 bg-transparent py-2 text-sm focus:outline-none placeholder:text-slate-400 font-medium" value={url} onChange={(e) => setUrl(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleDownload()} />
-            <button onClick={handleDownload} disabled={isLoading || !url} className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-bold text-sm transition-all disabled:opacity-50 flex items-center gap-2 shadow-lg shadow-blue-500/30 active:scale-95">
+            <input type="url" placeholder="Tempel link di sini..." className="flex-1 bg-transparent py-2 text-sm focus:outline-none placeholder:text-slate-400 font-medium" value={url} onChange={(e) => setUrl(e.target.value)} />
+            
+            {/* TOMBOL CLIPBOARD */}
+            <button onClick={handlePaste} title="Tempel dari Clipboard" className="p-2 text-slate-400 hover:text-blue-500 transition-colors">
+              <ClipboardPaste className="w-5 h-5" />
+            </button>
+
+            <button onClick={handleDownload} disabled={isLoading || !url} className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-bold text-sm transition-all disabled:opacity-50 flex items-center gap-2 shadow-lg active:scale-95">
               {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Cari"}
             </button>
           </div>
         </div>
 
-        {error && <div className="p-4 bg-red-50 dark:bg-red-900/20 text-red-600 text-xs rounded-xl flex items-start gap-3 border border-red-100"><AlertCircle className="w-5 h-5 shrink-0" /><p>{error}</p></div>}
+        {error && <div className="p-4 bg-red-50 text-red-600 text-xs rounded-xl flex items-start gap-3 border border-red-100"><AlertCircle className="w-5 h-5 shrink-0" /><p>{error}</p></div>}
         
         {isLoading && (
           <div className="space-y-4 pt-4 animate-pulse text-center">
@@ -216,7 +272,50 @@ export default function MiscTools({ slug }: { slug: string }) {
           </div>
         )}
 
-        {/* HASIL DOWNLOAD */}
+        {/* --- HASIL SPOTIFY (ALBUM/PLAYLIST) --- */}
+        {isSpotify && spotifyData && !isLoading && (
+          <div className="space-y-4 animate-fade-in-up">
+            <div className="bg-gradient-to-b from-slate-800 to-black rounded-[2rem] p-6 shadow-2xl relative overflow-hidden">
+               <div className="flex items-center gap-4 relative z-10">
+                 <img src={spotifyData.thumbnail} className="w-24 h-24 rounded-xl shadow-lg" alt="cover" />
+                 <div>
+                    <p className="text-[10px] font-bold text-green-500 uppercase tracking-wider mb-1">Spotify {spotifyData.tracks.length > 1 ? 'Collection' : 'Track'}</p>
+                    <h2 className="text-lg font-extrabold text-white line-clamp-2 leading-tight">{spotifyData.title}</h2>
+                    <p className="text-xs text-slate-400 mt-1">{spotifyData.artist}</p>
+                 </div>
+               </div>
+            </div>
+            
+            <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-xl border border-slate-100 dark:border-slate-700 overflow-hidden">
+              <div className="p-4 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-100 dark:border-slate-700 flex justify-between items-center sticky top-0 z-10">
+                <h4 className="text-xs font-bold text-slate-500 uppercase">Daftar Lagu ({spotifyData.tracks.length})</h4>
+                <button onClick={() => alert("Fitur Download All masih dalam pengembangan karena batasan browser.")} className="text-[10px] bg-green-500 text-black font-bold px-3 py-1.5 rounded-lg active:scale-95 transition-all">Download All</button>
+              </div>
+              <div className="divide-y divide-slate-100 dark:divide-slate-700/50 max-h-[400px] overflow-y-auto">
+                {spotifyData.tracks.map((track: any, idx: number) => (
+                  <div key={idx} className="p-3 flex items-center justify-between gap-3 hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                    <div className="flex items-center gap-3 overflow-hidden">
+                      <span className="text-xs font-bold text-slate-400 w-4">{idx + 1}</span>
+                      <img src={track.cover} className="w-10 h-10 rounded-md shrink-0" alt="" />
+                      <div className="truncate">
+                        <p className="text-xs font-bold text-slate-800 dark:text-white truncate">{track.title}</p>
+                        <p className="text-[10px] text-slate-500 truncate">{track.artists}</p>
+                      </div>
+                    </div>
+                    <button 
+                      onClick={() => fetchSpotify(`https://open.spotify.com/track/${track.id}`)}
+                      className="p-2 bg-slate-900 dark:bg-blue-600 text-white rounded-lg shrink-0 hover:bg-black transition-colors"
+                    >
+                      <Download className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* --- HASIL DOWNLOADER UMUM --- */}
         {!isLoading && mediaList.length > 0 && (
           <div className="space-y-6 animate-fade-in-up">
             
@@ -224,71 +323,45 @@ export default function MiscTools({ slug }: { slug: string }) {
             {hasMultipleTypes && (
               <div className="flex bg-slate-100 dark:bg-slate-800 p-1.5 rounded-2xl">
                 {mediaList.some(m => m.type?.includes('video') || m.url.includes('.mp4')) && (
-                  <button onClick={() => setActiveTab("video")} className={`flex-1 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all ${activeTab === 'video' ? 'bg-white dark:bg-slate-700 shadow-sm text-blue-600' : 'text-slate-500'}`}><Video className="w-4 h-4" /> Video</button>
+                  <button onClick={() => setActiveTab("video")} className={`flex-1 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 ${activeTab === 'video' ? 'bg-white dark:bg-slate-700 shadow-sm text-blue-600' : 'text-slate-500'}`}><Video className="w-4 h-4" /> Video</button>
                 )}
                 {mediaList.some(m => m.type?.includes('audio') || m.url.includes('.mp3')) && (
-                  <button onClick={() => setActiveTab("audio")} className={`flex-1 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all ${activeTab === 'audio' ? 'bg-white dark:bg-slate-700 shadow-sm text-purple-600' : 'text-slate-500'}`}><Music className="w-4 h-4" /> Audio</button>
+                  <button onClick={() => setActiveTab("audio")} className={`flex-1 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 ${activeTab === 'audio' ? 'bg-white dark:bg-slate-700 shadow-sm text-purple-600' : 'text-slate-500'}`}><Music className="w-4 h-4" /> Audio</button>
                 )}
-                {mediaList.some(m => m.type?.includes('image') || m.url.match(/\.(jpg|jpeg|png)/i)) && (
-                  <button onClick={() => setActiveTab("image")} className={`flex-1 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all ${activeTab === 'image' ? 'bg-white dark:bg-slate-700 shadow-sm text-orange-600' : 'text-slate-500'}`}><ImageIcon className="w-4 h-4" /> Gambar</button>
+                {mediaList.some(m => m.type?.includes('image')) && (
+                  <button onClick={() => setActiveTab("image")} className={`flex-1 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 ${activeTab === 'image' ? 'bg-white dark:bg-slate-700 shadow-sm text-orange-600' : 'text-slate-500'}`}><ImageIcon className="w-4 h-4" /> Gambar</button>
                 )}
               </div>
             )}
 
-            {/* --- SPOTIFY PREMIUM UI --- */}
-            {isSpotify && activeTab === 'audio' && filteredMedia[0] && (
-              <div className="bg-gradient-to-b from-slate-800 to-black rounded-[2rem] p-6 shadow-2xl relative overflow-hidden">
-                <div className="absolute top-0 left-0 w-full h-full bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-10 pointer-events-none"></div>
-                <div className="flex flex-col items-center relative z-10">
-                  <div className="w-48 h-48 rounded-2xl overflow-hidden shadow-[0_20px_50px_rgba(0,0,0,0.5)] mb-6">
-                    <img src={filteredMedia[0].thumbnail || "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=500&q=80"} alt="Cover" className="w-full h-full object-cover" />
-                  </div>
-                  <div className="text-center w-full mb-6">
-                    <h2 className="text-lg font-extrabold text-white line-clamp-1">{filteredMedia[0].title || "Spotify Track"}</h2>
-                    <p className="text-sm text-slate-400 font-medium mt-1">{filteredMedia[0].artist || "Unknown Artist"}</p>
-                  </div>
-                  <div className="w-full bg-slate-800/80 rounded-xl p-3 flex items-center gap-3 backdrop-blur-md border border-white/10">
-                    <div className="w-10 h-10 bg-green-500 rounded-full flex items-center justify-center shrink-0">
-                      <Headphones className="w-5 h-5 text-black" />
-                    </div>
-                    <div className="flex-1 overflow-hidden">
-                      <p className="text-xs font-bold text-green-400">Audio MP3 Siap</p>
-                      <p className="text-[10px] text-slate-400">Ketuk unduh untuk menyimpan</p>
-                    </div>
-                  </div>
-                </div>
+            {/* PREVIEW (Hanya jika bukan Spotify) */}
+            {!isSpotify && (
+              <div className="rounded-3xl overflow-hidden shadow-2xl bg-black/90 flex justify-center">
+                {activeTab === 'video' && filteredMedia[0] && <video src={filteredMedia[0].url} controls playsInline className="w-full max-h-[300px] object-contain" />}
+                {activeTab === 'image' && filteredMedia[0] && <img src={filteredMedia[0].url} alt="Preview" className="w-full max-h-[300px] object-contain" />}
               </div>
             )}
 
-            {/* --- STANDAR PREVIEW (TIKTOK/YT/IG) --- */}
-            {!isSpotify && activeTab === 'video' && filteredMedia[0] && (
-              <div className="relative rounded-3xl overflow-hidden shadow-2xl bg-black flex justify-center">
-                <video src={filteredMedia[0].url} controls playsInline className="w-full h-auto max-h-[350px] object-contain" />
-              </div>
-            )}
-            {!isSpotify && activeTab === 'image' && filteredMedia[0] && (
-              <div className="relative rounded-3xl overflow-hidden shadow-2xl bg-slate-900 flex justify-center">
-                <img src={filteredMedia[0].url} alt="Preview" className="w-full h-auto max-h-[350px] object-contain" />
-                {isPinterest && <div className="absolute top-3 left-3 bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded-md shadow-lg">HD ORIGINAL</div>}
-              </div>
-            )}
-
-            {/* --- LIST TOMBOL DOWNLOAD --- */}
+            {/* LIST DOWNLOAD */}
             <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-xl border border-slate-100 dark:border-slate-700 overflow-hidden">
+              <div className="p-4 border-b border-slate-100 dark:border-slate-700 flex justify-between items-center">
+                <h4 className="text-xs font-bold text-slate-500 uppercase">Pilih Kualitas</h4>
+                {/* FITUR DOWNLOAD ALL UNTUK GAMBAR (TIKTOK SLIDE) */}
+                {isTikTok && activeTab === 'image' && filteredMedia.length > 1 && (
+                  <button onClick={() => handleDownloadAll(filteredMedia)} className="text-[10px] bg-blue-600 text-white font-bold px-3 py-1.5 rounded-lg shadow-md active:scale-95 transition-all flex items-center gap-1">
+                    <Download className="w-3 h-3" /> Unduh Semua Slide
+                  </button>
+                )}
+              </div>
               <div className="divide-y divide-slate-100 dark:divide-slate-700/50">
                 {filteredMedia.map((media, idx) => (
                   <div key={idx} className="p-4 flex flex-col gap-3">
-                    <div className="flex items-center justify-between w-full">
-                      <div className="flex items-center gap-2">
-                        {media.isHD ? <Star className="w-4 h-4 text-orange-500 fill-orange-500" /> : <CheckCircle2 className="w-4 h-4 text-green-500" />}
-                        <p className="text-sm font-bold text-slate-800 dark:text-white line-clamp-1">{media.label}</p>
-                      </div>
-                      <span className="px-2 py-1 text-[10px] font-extrabold rounded-md uppercase tracking-wider bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
-                        {media.isHD ? 'HD' : media.type === 'audio' ? 'MP3' : media.type === 'video' ? 'MP4' : 'IMG'}
-                      </span>
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-bold text-slate-800 dark:text-white line-clamp-1">{media.label}</p>
+                      <span className="px-2 py-1 text-[10px] font-bold rounded bg-slate-100 dark:bg-slate-700 text-slate-600">{media.isHD ? 'HD' : media.type === 'audio' ? 'MP3' : 'FILE'}</span>
                     </div>
-                    <a href={media.url} target="_blank" rel="noopener noreferrer" className={`w-full py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 active:scale-95 transition-all shadow-md ${isSpotify ? 'bg-green-500 hover:bg-green-600 text-black' : media.isHD ? 'bg-gradient-to-r from-orange-500 to-red-500 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}>
-                      <Download className="w-4 h-4" /> Unduh Sekarang
+                    <a href={media.url} target="_blank" rel="noopener noreferrer" className="w-full py-2.5 bg-slate-900 dark:bg-blue-600 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 active:scale-95 shadow-md">
+                      <Download className="w-4 h-4" /> Unduh File
                     </a>
                   </div>
                 ))}
@@ -304,11 +377,9 @@ export default function MiscTools({ slug }: { slug: string }) {
   if (slug === "qr-generator") {
     return (
       <div className="space-y-6 flex flex-col items-center animate-fade-in-up pb-10">
-        <div className="w-full relative group">
-          <input type="text" placeholder="Ketik URL / Teks..." className="relative w-full p-4 rounded-2xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-blue-500 outline-none shadow-sm text-sm font-medium" value={text} onChange={(e) => setText(e.target.value)} />
-        </div>
+        <div className="w-full"><input type="text" placeholder="Ketik URL / Teks..." className="w-full p-4 rounded-2xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-blue-500 outline-none shadow-sm text-sm font-medium" value={text} onChange={(e) => setText(e.target.value)} /></div>
         {qrUrl && (
-          <div className="p-5 bg-white dark:bg-slate-800 rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-700 flex flex-col items-center w-full max-w-[280px] animate-in zoom-in-95">
+          <div className="p-5 bg-white dark:bg-slate-800 rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-700 flex flex-col items-center w-full max-w-[280px]">
             <img src={qrUrl} alt="QR Code" className="w-full aspect-square rounded-xl mb-4" />
             <a href={qrUrl} download="qrcode.png" className="flex items-center justify-center gap-2 w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-bold shadow-lg"><Download className="w-4 h-4" /> Simpan QR</a>
           </div>
