@@ -22,14 +22,14 @@ const saveToHistory = (platform: string, url: string, title: string, thumbnail?:
 };
 
 // ==========================================
-// KONFIGURASI API (TANPA COBALT & BTCH)
+// KONFIGURASI API (TIKTOK PAKAI 2 API)
 // ==========================================
 const API_CONFIG: Record<string, { name: string, url: (u: string) => string }[]> = {
   tiktok: [
     { name: "TikWM", url: (u) => `${WORKER_URL}/?url=${encodeURIComponent(`https://www.tikwm.com/api/?url=${u}`)}` },
+    { name: "Tiklydown", url: (u) => `${WORKER_URL}/?url=${encodeURIComponent(`https://api.tiklydown.eu.org/api/download?url=${u}`)}` }
   ],
   youtube: [
-    // Vevioz: Mengambil ID video dari link YouTube
     { name: "Vevioz", url: (u) => {
         const id = u.split('v=')[1]?.split('&')[0] || u.split('/').pop()?.split('?')[0];
         return `${WORKER_URL}/?url=${encodeURIComponent(`https://api.vevioz.com/api/button/mp3/${id}`)}`;
@@ -46,7 +46,6 @@ const API_CONFIG: Record<string, { name: string, url: (u: string) => string }[]>
     { name: "SpotifyDown", url: (u) => `${WORKER_URL}/?url=${encodeURIComponent(`https://api.spotifydown.com/download/${u.split('/').pop()?.split('?')[0]}`)}` }
   ],
   aio: [
-    // AIO menggunakan Vevioz (Hanya mendukung YouTube)
     { name: "Vevioz AIO", url: (u) => {
         const id = u.split('v=')[1]?.split('&')[0] || u.split('/').pop()?.split('?')[0];
         return `${WORKER_URL}/?url=${encodeURIComponent(`https://api.vevioz.com/api/button/videos/${id}`)}`;
@@ -135,34 +134,49 @@ export default function MiscTools({ slug }: { slug: string }) {
         const response = await fetch(api.url(url));
         if (!response.ok) throw new Error(`Server sibuk`);
         
-        // Vevioz mengembalikan HTML, jadi kita baca sebagai text
         const textData = await response.text(); 
         let items: ApiMediaItem[] = [];
 
-        if (platform === "tiktok" && textData.includes('"data"')) {
-           // Parsing TikWM (JSON)
-           const data = JSON.parse(textData);
-           const d = data.data;
-           if (d.play) items.push({ url: d.play, label: "No Watermark (Standar)", type: "video" });
-           if (d.hdplay || d.play) items.push({ url: d.hdplay || `${d.play}?hd=1`, label: "No Watermark + HD", type: "video", isHD: true });
-           if (d.music || d.music_info?.play) items.push({ url: d.music || d.music_info.play, label: "Audio MP3", type: "audio" });
-           if (d.images) d.images.forEach((img: string, i: number) => items.push({ url: img, label: `Slide ${i+1}`, type: "image" }));
+        // --- PARSING TIKTOK (TikWM & Tiklydown) ---
+        if (platform === "tiktok") {
+           try {
+             const data = JSON.parse(textData);
+             
+             // Cek format TikWM
+             if (data.data) {
+               const d = data.data;
+               if (d.play) items.push({ url: d.play, label: "No Watermark (Standar)", type: "video" });
+               if (d.hdplay || d.play) items.push({ url: d.hdplay || `${d.play}?hd=1`, label: "No Watermark + HD", type: "video", isHD: true });
+               if (d.music || d.music_info?.play) items.push({ url: d.music || d.music_info.play, label: "Audio MP3", type: "audio" });
+               if (d.images) d.images.forEach((img: string, i: number) => items.push({ url: img, label: `Slide ${i+1}`, type: "image" }));
+             } 
+             // Cek format Tiklydown
+             else if (data.video || data.music) {
+               if (data.video?.noWatermark) items.push({ url: data.video.noWatermark, label: "No Watermark", type: "video" });
+               if (data.video?.noWatermarkHd) items.push({ url: data.video.noWatermarkHd, label: "No Watermark + HD", type: "video", isHD: true });
+               if (data.music?.play) items.push({ url: data.music.play, label: "Audio MP3", type: "audio" });
+             }
+             // Jika API mengembalikan error message
+             else if (data.msg || data.message) {
+               throw new Error(data.msg || data.message);
+             }
+           } catch (e) {
+             // Jika bukan JSON atau gagal parse
+             throw new Error("API mengembalikan format yang tidak dikenali.");
+           }
         } 
+        // --- PARSING YOUTUBE (Vevioz) ---
         else if (api.name.includes("Vevioz")) {
-           // EKSTRAKSI REGEX UNTUK HTML VEVI0Z
            const mp3Match = textData.match(/href="(https:\/\/[^"]+\.mp3[^"]*)"/i);
            const mp4Match = textData.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i);
            
            if (mp3Match && mp3Match[1]) items.push({ url: mp3Match[1], label: "Audio MP3 (Vevioz)", type: "audio" });
            if (mp4Match && mp4Match[1]) items.push({ url: mp4Match[1], label: "Video MP4 (Vevioz)", type: "video" });
            
-           if (items.length === 0) {
-              // Fallback jika regex gagal
-              throw new Error("Gagal mengekstrak link dari HTML Vevioz.");
-           }
+           if (items.length === 0) throw new Error("Gagal mengekstrak link. Pastikan link YouTube valid.");
         }
+        // --- PARSING UNIVERSAL (IG, Pinterest) ---
         else {
-           // Parsing Universal (Snapinsta / JSON)
            const data = JSON.parse(textData);
            if (data.normalized?.media) {
               items = data.normalized.media.map((m: any) => ({ url: m.url, label: m.label || m.type, type: m.type }));
@@ -182,7 +196,7 @@ export default function MiscTools({ slug }: { slug: string }) {
         } else throw new Error(`Tidak ada link ditemukan`);
       } catch (err: any) { lastError = err.message; }
     }
-    if (!success) setError(`Gagal: ${lastError}. API mungkin sedang down.`);
+    if (!success) setError(`Gagal: ${lastError}.`);
     setIsLoading(false);
   };
 
