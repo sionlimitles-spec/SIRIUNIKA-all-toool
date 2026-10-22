@@ -5,16 +5,14 @@ import { Smartphone, Battery, Wifi, Clock } from "lucide-react";
 
 export default function StatusCard() {
   const [time, setTime] = useState("");
-  const [device, setDevice] = useState("Memuat...");
+  const [device, setDevice] = useState("...");
   const [battery, setBattery] = useState<{ level: number; charging: boolean } | null>(null);
-  const [network, setNetwork] = useState("Online");
+  const [network, setNetwork] = useState("...");
 
   useEffect(() => {
-    const updateTime = () => {
-      setTime(new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-    };
+    const updateTime = () => setTime(new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }));
     updateTime();
-    const interval = setInterval(updateTime, 1000);
+    const interval = setInterval(updateTime, 10000); // Cukup tiap 10 detik agar hemat resource
 
     const ua = navigator.userAgent;
     if (/android/i.test(ua)) setDevice("Android");
@@ -28,7 +26,6 @@ export default function StatusCard() {
       (navigator as any).getBattery().then((bat: any) => {
         setBattery({ level: Math.round(bat.level * 100), charging: bat.charging });
         bat.addEventListener('levelchange', () => setBattery({ level: Math.round(bat.level * 100), charging: bat.charging }));
-        bat.addEventListener('chargingchange', () => setBattery({ level: Math.round(bat.level * 100), charging: bat.charging }));
       }).catch(() => setBattery(null));
     }
 
@@ -36,7 +33,7 @@ export default function StatusCard() {
       if (!navigator.onLine) setNetwork("Offline");
       else {
         const conn = (navigator as any).connection;
-        if (conn && conn.effectiveType) setNetwork(`Online (${conn.effectiveType.toUpperCase()})`);
+        if (conn && conn.effectiveType) setNetwork(`${conn.effectiveType.toUpperCase()}`);
         else setNetwork("Online");
       }
     };
@@ -51,14 +48,6 @@ export default function StatusCard() {
     };
   }, []);
 
-  const getGreeting = () => {
-    const hour = new Date().getHours();
-    if (hour < 11) return "Selamat Pagi";
-    if (hour < 15) return "Selamat Siang";
-    if (hour < 18) return "Selamat Sore";
-    return "Selamat Malam";
-  };
-
   const getBatteryColor = (level: number) => {
     if (level > 50) return "bg-green-500";
     if (level > 20) return "bg-yellow-500";
@@ -66,60 +55,37 @@ export default function StatusCard() {
   };
 
   return (
-    <div className="glass-card p-5 space-y-4">
-      <div className="flex items-center gap-4">
-        <div className="w-14 h-14 rounded-full bg-gradient-to-tr from-blue-500 to-purple-500 flex items-center justify-center text-white font-bold text-xl shadow-lg border-2 border-white/50">
-          G
-        </div>
+    <div className="glass-card p-4 flex items-center justify-between gap-2 overflow-hidden">
+      {/* Avatar & Role */}
+      <div className="flex items-center gap-3 shrink-0">
+        <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-blue-500 to-purple-500 flex items-center justify-center text-white font-bold text-sm shadow-md">G</div>
         <div>
-          <p className="text-xs text-slate-500 dark:text-slate-400">{getGreeting()},</p>
-          <h3 className="font-bold text-lg">Guest User</h3>
-          <span className="inline-block mt-1 px-2 py-0.5 text-[10px] font-bold rounded-md bg-gradient-to-r from-blue-500/20 to-purple-500/20 text-blue-700 dark:text-blue-300 border border-blue-500/30">
-            GUEST
-          </span>
+          <h3 className="font-bold text-sm leading-tight">Guest</h3>
+          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">MEMBER</span>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 pt-2">
-        <div className="bg-slate-100/50 dark:bg-slate-800/50 p-2.5 rounded-2xl flex items-center gap-3">
-          <Smartphone className="w-4 h-4 text-blue-500" />
-          <div>
-            <p className="text-[10px] text-slate-500">Perangkat</p>
-            <p className="text-xs font-semibold">{device}</p>
-          </div>
+      {/* Info Grid Gepeng (4 Kolom) */}
+      <div className="flex items-center gap-2 flex-1 justify-end text-[10px] font-medium text-slate-600 dark:text-slate-300">
+        <div className="flex items-center gap-1 bg-slate-100/50 dark:bg-slate-800/50 px-2 py-1.5 rounded-lg">
+          <Smartphone className="w-3.5 h-3.5 text-blue-500" /> <span className="truncate max-w-[40px]">{device}</span>
         </div>
-
-        <div className="bg-slate-100/50 dark:bg-slate-800/50 p-2.5 rounded-2xl flex items-center gap-3">
-          <Battery className="w-4 h-4 text-green-500" />
-          <div className="w-full">
-            <p className="text-[10px] text-slate-500">Baterai</p>
-            {battery ? (
-              <div className="flex items-center gap-2">
-                <div className="h-1.5 flex-1 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
-                  <div className={`h-full ${getBatteryColor(battery.level)}`} style={{ width: `${battery.level}%` }} />
-                </div>
-                <span className="text-[10px] font-semibold">{battery.level}% {battery.charging && "⚡"}</span>
+        <div className="flex items-center gap-1 bg-slate-100/50 dark:bg-slate-800/50 px-2 py-1.5 rounded-lg">
+          <Battery className="w-3.5 h-3.5 text-green-500" />
+          {battery ? (
+            <div className="flex items-center gap-1">
+              <div className="w-6 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                <div className={`h-full ${getBatteryColor(battery.level)}`} style={{ width: `${battery.level}%` }} />
               </div>
-            ) : (
-              <p className="text-xs font-semibold">N/A</p>
-            )}
-          </div>
+              <span>{battery.level}%</span>
+            </div>
+          ) : <span>N/A</span>}
         </div>
-
-        <div className="bg-slate-100/50 dark:bg-slate-800/50 p-2.5 rounded-2xl flex items-center gap-3">
-          <Wifi className="w-4 h-4 text-purple-500" />
-          <div>
-            <p className="text-[10px] text-slate-500">Jaringan</p>
-            <p className="text-xs font-semibold">{network}</p>
-          </div>
+        <div className="flex items-center gap-1 bg-slate-100/50 dark:bg-slate-800/50 px-2 py-1.5 rounded-lg">
+          <Wifi className="w-3.5 h-3.5 text-purple-500" /> <span>{network}</span>
         </div>
-
-        <div className="bg-slate-100/50 dark:bg-slate-800/50 p-2.5 rounded-2xl flex items-center gap-3">
-          <Clock className="w-4 h-4 text-orange-500" />
-          <div>
-            <p className="text-[10px] text-slate-500">Waktu</p>
-            <p className="text-xs font-semibold tabular-nums">{time || "--:--:--"}</p>
-          </div>
+        <div className="flex items-center gap-1 bg-slate-100/50 dark:bg-slate-800/50 px-2 py-1.5 rounded-lg">
+          <Clock className="w-3.5 h-3.5 text-orange-500" /> <span className="tabular-nums">{time}</span>
         </div>
       </div>
     </div>
